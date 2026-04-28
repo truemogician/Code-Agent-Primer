@@ -1,0 +1,11 @@
+{
+	"name": "code-agent-primer",
+	"version": "0.1.0",
+	"type": "module",
+	"private": true,
+	"scripts": {
+		"build": "tsc"
+	},
+	"author": "true_mogician",
+	"license": "MIT"
+}
