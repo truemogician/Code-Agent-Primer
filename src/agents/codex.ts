@@ -122,15 +122,78 @@ class CodexAgent extends CodeAgent {
 		return t != undefined;
 	}
 
-	async sendRequest({ model = this.defaultModel, primer = this.defaultPrimer, consume = false }: SendRequestOptions): Promise<RawPrimerResponse> {
-		const tokens = await getTokens("codex");
+	private async refreshTokens(refreshToken: string): Promise<CodexTokens> {
+		const res = await fetch(this.oauth.tokenUrl, {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				grant_type: "refresh_token",
+				client_id: this.oauth.clientId,
+				refresh_token: refreshToken,
+				scope: this.oauth.scope,
+			}),
+		});
+		if (!res.ok) {
+			const body = await res.text().catch(() => "(failed to read body)");
+			throw new Error(`Codex token refresh failed (${res.status}): ${body.slice(0, 300)}`);
+		}
+		const json = (await res.json()) as CodeExchangeResponse;
+		const previous = await getTokens("codex");
+		const obtainedAt = Math.floor(Date.now() / 1000);
+		const idToken = json.id_token ?? previous?.id_token;
+		const next: CodexTokens = {
+			provider: "codex",
+			access_token: json.access_token,
+			refresh_token: json.refresh_token ?? refreshToken,
+			id_token: idToken,
+			api_key: previous?.api_key,
+			account_id: previous?.account_id ?? this.decodeChatGptAccountId(idToken),
+			expires_at: json.expires_in ? obtainedAt + json.expires_in : undefined,
+			obtained_at: obtainedAt,
+		};
+		await saveTokens(next);
+		return next;
+	}
+
+	private async getValidTokens(): Promise<CodexTokens> {
+		let tokens = await getTokens("codex");
 		if (!tokens)
 			throw new Error("Codex not logged in. Run `code-agent-primer login codex` first.");
+		const now = Math.floor(Date.now() / 1000);
+		if (tokens.expires_at !== undefined && tokens.expires_at - now < 60) {
+			if (!tokens.refresh_token)
+				throw new Error("Codex access token expired and no refresh token is stored. Run `code-agent-primer login codex` again.");
+			tokens = await this.refreshTokens(tokens.refresh_token);
+		}
+		return tokens;
+	}
+
+	async sendRequest({ model = this.defaultModel, primer = this.defaultPrimer, consume = false }: SendRequestOptions): Promise<RawPrimerResponse> {
+		let tokens = await this.getValidTokens();
 		const accountId = tokens.account_id ?? this.decodeChatGptAccountId(tokens.id_token);
 		if (!accountId)
 			throw new Error("Could not determine ChatGPT account id from stored Codex tokens.");
+		let res = await this.callResponses(tokens, accountId, model, primer);
+		if (res.status === 401 && tokens.refresh_token) {
+			res.body?.cancel().catch(() => { /* ignore */ });
+			tokens = await this.refreshTokens(tokens.refresh_token);
+			res = await this.callResponses(tokens, accountId, model, primer);
+		}
+		const headers = flattenHeaders(res.headers);
+		if (!res.ok) {
+			const body = await res.text().catch(() => "(failed to read response body)");
+			log.warn(`codex responses ${res.status}: ${body.slice(0, 500)}`);
+		}
+		else {
+			await (consume ? res.text() : res.body?.cancel())
+				?.catch(() => { /* ignore */ });
+		}
+		return { status: res.status, headers };
+	}
+
+	private callResponses(tokens: CodexTokens, accountId: string, model: string, primer: string): Promise<Response> {
 		const sessionId = randomUUID();
-		const res = await fetch(RESPONSES_URL, {
+		return fetch(RESPONSES_URL, {
 			method: "POST",
 			headers: {
 				"authorization": `Bearer ${tokens.access_token}`,
@@ -153,16 +216,6 @@ class CodexAgent extends CodeAgent {
 				prompt_cache_key: sessionId,
 			}),
 		});
-		const headers = flattenHeaders(res.headers);
-		if (!res.ok) {
-			const body = await res.text().catch(() => "(failed to read response body)");
-			log.warn(`codex responses ${res.status}: ${body.slice(0, 500)}`);
-		}
-		else {
-			await (consume ? res.text() : res.body?.cancel())
-				?.catch(() => { /* ignore */ });
-		}
-		return { status: res.status, headers };
 	}
 
 	/** Decode the chatgpt account id from the JWT id_token, if present. */

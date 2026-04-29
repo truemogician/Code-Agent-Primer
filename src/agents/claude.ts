@@ -59,17 +59,7 @@ class ClaudeAgent extends CodeAgent {
 			throw new Error(`Claude token exchange failed (${tokenRes.status})`);
 		}
 		const tokenJson = (await tokenRes.json()) as ClaudeTokenResponse;
-
-		const obtainedAt = Math.floor(Date.now() / 1000);
-		const tokens: ClaudeTokens = {
-			provider: "claude",
-			access_token: tokenJson.access_token,
-			refresh_token: tokenJson.refresh_token,
-			expires_at: tokenJson.expires_in ? obtainedAt + tokenJson.expires_in : undefined,
-			scopes: tokenJson.scope ? tokenJson.scope.split(/\s+/) : this.oauth.scope.split(/\s+/),
-			obtained_at: obtainedAt,
-		};
-		await saveTokens(tokens);
+		await this.persistTokenResponse(tokenJson);
 		console.log("✓ Claude tokens saved.");
 	}
 
@@ -78,11 +68,70 @@ class ClaudeAgent extends CodeAgent {
 		return !!t;
 	}
 
-	async sendRequest({ model = this.defaultModel, primer = this.defaultPrimer }: SendRequestOptions): Promise<RawPrimerResponse> {
-		const tokens = await getTokens("claude");
+	/** Persist a token response from either authorization_code or refresh_token grants. */
+	private async persistTokenResponse(tokenJson: ClaudeTokenResponse, fallbackRefreshToken?: string): Promise<ClaudeTokens> {
+		const obtainedAt = Math.floor(Date.now() / 1000);
+		const tokens: ClaudeTokens = {
+			provider: "claude",
+			access_token: tokenJson.access_token,
+			refresh_token: tokenJson.refresh_token ?? fallbackRefreshToken,
+			expires_at: tokenJson.expires_in ? obtainedAt + tokenJson.expires_in : undefined,
+			scopes: tokenJson.scope ? tokenJson.scope.split(/\s+/) : this.oauth.scope.split(/\s+/),
+			obtained_at: obtainedAt,
+		};
+		await saveTokens(tokens);
+		return tokens;
+	}
+
+	private async refreshTokens(refreshToken: string): Promise<ClaudeTokens> {
+		const res = await fetch(this.oauth.tokenUrl, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				grant_type: "refresh_token",
+				refresh_token: refreshToken,
+				client_id: this.oauth.clientId,
+			}),
+		});
+		if (!res.ok) {
+			const body = await res.text().catch(() => "(failed to read body)");
+			throw new Error(`Claude token refresh failed (${res.status}): ${body.slice(0, 300)}`);
+		}
+		const json = (await res.json()) as ClaudeTokenResponse;
+		return this.persistTokenResponse(json, refreshToken);
+	}
+
+	/** Return a usable token, refreshing proactively if it is within 60s of expiry. */
+	private async getValidTokens(): Promise<ClaudeTokens> {
+		let tokens = await getTokens("claude");
 		if (!tokens)
 			throw new Error("Claude not logged in. Run `code-agent-primer login claude` first.");
-		const res = await fetch(MESSAGES_URL, {
+		const now = Math.floor(Date.now() / 1000);
+		if (tokens.expires_at !== undefined && tokens.expires_at - now < 60) {
+			if (!tokens.refresh_token)
+				throw new Error("Claude access token expired and no refresh token is stored. Run `code-agent-primer login claude` again.");
+			tokens = await this.refreshTokens(tokens.refresh_token);
+		}
+		return tokens;
+	}
+
+	async sendRequest({ model = this.defaultModel, primer = this.defaultPrimer }: SendRequestOptions): Promise<RawPrimerResponse> {
+		let tokens = await this.getValidTokens();
+		let res = await this.callMessages(tokens, model, primer);
+		if (res.status === 401 && tokens.refresh_token) {
+			res.body?.cancel();
+			tokens = await this.refreshTokens(tokens.refresh_token);
+			res = await this.callMessages(tokens, model, primer);
+		}
+		const headers = flattenHeaders(res.headers);
+		const bodyText = await res.text().catch(() => "");
+		if (!res.ok)
+			console.error(`[claude] ${res.status} body: ${bodyText.slice(0, 500)}`);
+		return { status: res.status, headers };
+	}
+
+	private callMessages(tokens: ClaudeTokens, model: string, primer: string): Promise<Response> {
+		return fetch(MESSAGES_URL, {
 			method: "POST",
 			headers: {
 				"authorization": `Bearer ${tokens.access_token}`,
@@ -97,11 +146,6 @@ class ClaudeAgent extends CodeAgent {
 				messages: [{ role: "user", content: primer }],
 			}),
 		});
-		const headers = flattenHeaders(res.headers);
-		const bodyText = await res.text().catch(() => "");
-		if (!res.ok)
-			console.error(`[claude] ${res.status} body: ${bodyText.slice(0, 500)}`);
-		return { status: res.status, headers };
 	}
 
 	selectQuotaHeaders(headers: Record<string, string>): Record<string, string> {
