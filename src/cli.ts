@@ -33,12 +33,16 @@ function openInBrowser(url: string): void {
 }
 
 function formatAgentConfig(agent: CodeAgent, stored: AgentSchedule | undefined): string {
+	const followUpDetail = agent.followUpWindowId
+		? `${stored?.followUp ? "on" : "off"} (probe ${stored?.followUpProbeLeadMinutes}min before window "${agent.followUpWindowId}" resets)`
+		: "(unsupported by agent)";
 	return [
 		`[${agent.id}] ${agent.displayName}`,
-		`  enabled: ${stored?.enabled}`,
-		`  cron:    ${stored?.cron}`,
-		`  model:   ${stored?.model ?? `(default: ${agent.defaultModel})`}`,
-		`  primer:  ${stored?.primer ?? `(default: ${JSON.stringify(agent.defaultPrimer)})`}`,
+		`  enabled:   ${stored?.enabled}`,
+		`  cron:      ${stored?.cron}`,
+		`  model:     ${stored?.model ?? `(default: ${agent.defaultModel})`}`,
+		`  primer:    ${stored?.primer ?? `(default: ${JSON.stringify(agent.defaultPrimer)})`}`,
+		`  follow-up: ${followUpDetail}`,
 	].join("\n");
 }
 
@@ -152,6 +156,8 @@ await yargs(hideBin(process.argv))
 			.option("primer", { type: "string", describe: "Override primer message (use \"\" to clear)" })
 			.option("enable", { type: "boolean", describe: "Enable scheduled primers" })
 			.option("disable", { type: "boolean", describe: "Disable scheduled primers" })
+			.option("follow-up", { type: "boolean", describe: "Chain extra primers across window boundaries while the user is active" })
+			.option("follow-up-probe-lead", { type: "number", describe: "Minutes before window reset to probe for usage (default 5)" })
 			.conflicts("enable", "disable"),
 		async argv => {
 			const config = await loadScheduleConfig();
@@ -175,6 +181,10 @@ await yargs(hideBin(process.argv))
 				patch.enabled = true;
 			if (argv.disable)
 				patch.enabled = false;
+			if (argv["follow-up"] !== undefined)
+				patch.followUp = argv["follow-up"];
+			if (argv["follow-up-probe-lead"] !== undefined)
+				patch.followUpProbeLeadMinutes = argv["follow-up-probe-lead"];
 			if (Object.keys(patch).length === 0) {
 				const agent = AgentRegistry.get(argv.agent);
 				const stored = withDefaults(config, [agent.id])[agent.id];

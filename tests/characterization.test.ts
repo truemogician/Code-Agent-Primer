@@ -94,7 +94,7 @@ test("formatQuotaSnapshot renders windows, buckets, and retry hints", () => {
 
 test("schedule config fills defaults and merges updates", async () => {
 	expect(schedule.withDefaults({}, ["codex"])).toEqual({
-		codex: { enabled: true, cron: "0 */1 * * *" },
+		codex: { enabled: true, cron: "0 */1 * * *", followUp: false, followUpProbeLeadMinutes: 5 },
 	});
 
 	const updated = await schedule.updateAgentConfig("codex", { enabled: false, model: "custom-model" });
@@ -102,6 +102,8 @@ test("schedule config fills defaults and merges updates", async () => {
 		enabled: false,
 		cron: "0 */1 * * *",
 		model: "custom-model",
+		followUp: false,
+		followUpProbeLeadMinutes: 5,
 	});
 });
 

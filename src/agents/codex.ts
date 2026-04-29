@@ -38,6 +38,7 @@ class CodexAgent extends CodeAgent {
 	readonly displayName = "Codex (OpenAI)";
 	readonly defaultModel = "gpt-5.4-mini";
 	readonly defaultPrimer = "ping";
+	override readonly followUpWindowId = "primary";
 
 	protected readonly oauth: OAuthConfig = {
 		clientId: CODEX.clientId,

@@ -3,13 +3,21 @@ import { CONFIG_PATH } from "../config.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils.js";
 
 const DEFAULT_CRON = "0 */1 * * *";
-export const DEFAULT_SCHEDULE = { enabled: true, cron: DEFAULT_CRON } as const;
+const DEFAULT_PROBE_LEAD_MINUTES = 5;
+export const DEFAULT_SCHEDULE = {
+	enabled: true,
+	cron: DEFAULT_CRON,
+	followUp: false,
+	followUpProbeLeadMinutes: DEFAULT_PROBE_LEAD_MINUTES,
+} as const;
 
 const AgentScheduleSchema = z.object({
 	enabled: z.boolean().default(true),
 	cron: z.string().default(DEFAULT_CRON),
 	model: z.string().optional(),
 	primer: z.string().optional(),
+	followUp: z.boolean().default(false),
+	followUpProbeLeadMinutes: z.number().positive().default(DEFAULT_PROBE_LEAD_MINUTES),
 });
 
 const ScheduleConfigSchema = z.record(z.string(), AgentScheduleSchema);

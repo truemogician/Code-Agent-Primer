@@ -21,6 +21,7 @@ class ClaudeAgent extends CodeAgent {
 	readonly displayName = "Claude Code (Anthropic)";
 	readonly defaultModel = "claude-haiku-4-5";
 	readonly defaultPrimer = "ping";
+	override readonly followUpWindowId = "session-5h";
 
 	protected readonly oauth: OAuthConfig = {
 		clientId: CLAUDE.clientId,

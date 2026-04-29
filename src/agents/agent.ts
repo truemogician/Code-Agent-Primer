@@ -89,6 +89,10 @@ export abstract class CodeAgent {
 	abstract readonly defaultModel: string;
 	/** Default primer message body sent to the agent. Users may override per-agent in config. */
 	abstract readonly defaultPrimer: string;
+	/** Id of the rolling "session" window in {@link QuotaSnapshot.windows} that the
+	 *  scheduler should chain follow-up primers against (e.g. Codex `"primary"`,
+	 *  Claude `"session-5h"`). Leave undefined to disable follow-ups for this agent. */
+	readonly followUpWindowId?: string;
 
 	/** Per-agent OAuth endpoints and parameters. */
 	protected abstract readonly oauth: OAuthConfig;
