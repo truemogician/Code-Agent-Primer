@@ -6,6 +6,8 @@ import { PRIMER_HOME } from "./config.js";
 import { sendPrimer } from "./primer/sender.js";
 import { startSchedulerFromConfig } from "./scheduler.js";
 import { loadScheduleConfig, updateAgentConfig, withDefaults } from "./storage/scheduleConfig.js";
+import type { AgentSchedule } from "./storage/scheduleConfig.js";
+import type { CodeAgent } from "./agents/agent.js";
 import { AgentRegistry } from "./agents/registry.js";
 import { log, formatQuotaSnapshot } from "./utils.js";
 import packageJson from "../package.json" with { type: "json" };
@@ -28,6 +30,16 @@ function openInBrowser(url: string): void {
 	catch {
 		/* user can copy/paste */
 	}
+}
+
+function formatAgentConfig(agent: CodeAgent, stored: AgentSchedule | undefined): string {
+	return [
+		`[${agent.id}] ${agent.displayName}`,
+		`  enabled: ${stored?.enabled}`,
+		`  cron:    ${stored?.cron}`,
+		`  model:   ${stored?.model ?? `(default: ${agent.defaultModel})`}`,
+		`  primer:  ${stored?.primer ?? `(default: ${JSON.stringify(agent.defaultPrimer)})`}`,
+	].join("\n");
 }
 
 async function showStatus(): Promise<void> {
@@ -148,11 +160,7 @@ await yargs(hideBin(process.argv))
 				console.log(`Primer home: ${PRIMER_HOME}`);
 				for (const agent of AgentRegistry.list()) {
 					const stored = effective[agent.id];
-					console.log(`\n[${agent.id}] ${agent.displayName}`);
-					console.log(`  enabled: ${stored?.enabled}`);
-					console.log(`  cron:    ${stored?.cron}`);
-					console.log(`  model:   ${stored?.model ?? `(default: ${agent.defaultModel})`}`);
-					console.log(`  primer:  ${stored?.primer ?? `(default: ${JSON.stringify(agent.defaultPrimer)})`}`);
+					console.log(`\n${formatAgentConfig(agent, stored)}`);
 				}
 				return;
 			}
@@ -170,11 +178,7 @@ await yargs(hideBin(process.argv))
 			if (Object.keys(patch).length === 0) {
 				const agent = AgentRegistry.get(argv.agent);
 				const stored = withDefaults(config, [agent.id])[agent.id];
-				console.log(`[${agent.id}] ${agent.displayName}`);
-				console.log(`  enabled: ${stored?.enabled}`);
-				console.log(`  cron:    ${stored?.cron}`);
-				console.log(`  model:   ${stored?.model ?? `(default: ${agent.defaultModel})`}`);
-				console.log(`  primer:  ${stored?.primer ?? `(default: ${JSON.stringify(agent.defaultPrimer)})`}`);
+				console.log(formatAgentConfig(agent, stored));
 				return;
 			}
 			const updated = await updateAgentConfig(argv.agent, patch);

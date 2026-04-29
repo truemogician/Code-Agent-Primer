@@ -1,11 +1,13 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import { z } from "zod";
 import { CONFIG_PATH } from "../config.js";
+import { readJsonFile, writeJsonFileAtomic } from "../utils.js";
+
+const DEFAULT_CRON = "0 */1 * * *";
+export const DEFAULT_SCHEDULE = { enabled: true, cron: DEFAULT_CRON } as const;
 
 const AgentScheduleSchema = z.object({
 	enabled: z.boolean().default(true),
-	cron: z.string().default("0 */1 * * *"),
+	cron: z.string().default(DEFAULT_CRON),
 	model: z.string().optional(),
 	primer: z.string().optional(),
 });
@@ -21,34 +23,23 @@ export function withDefaults(config: ScheduleConfig, agentIds: string[]): Schedu
 	const out: ScheduleConfig = { ...config };
 	for (const id of agentIds) {
 		if (!out[id])
-			out[id] = { enabled: true, cron: "0 */1 * * *" };
+			out[id] = { ...DEFAULT_SCHEDULE };
 	}
 	return out;
 }
 
 export async function loadScheduleConfig(): Promise<ScheduleConfig> {
-	try {
-		const raw = await readFile(CONFIG_PATH, "utf8");
-		return ScheduleConfigSchema.parse(JSON.parse(raw));
-	}
-	catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT")
-			return {};
-		throw err;
-	}
+	return readJsonFile(CONFIG_PATH, ScheduleConfigSchema, { missing: {} });
 }
 
 export async function saveScheduleConfig(config: ScheduleConfig): Promise<void> {
-	await mkdir(dirname(CONFIG_PATH), { recursive: true });
-	const tmp = `${CONFIG_PATH}.tmp`;
-	await writeFile(tmp, JSON.stringify(config, null, 2), "utf8");
-	await rename(tmp, CONFIG_PATH);
+	await writeJsonFileAtomic(CONFIG_PATH, config);
 }
 
 /** Merge a partial update into the on-disk schedule for one agent. Persists the result. */
 export async function updateAgentConfig(agentId: string, patch: Partial<AgentSchedule>): Promise<AgentSchedule> {
 	const config = await loadScheduleConfig();
-	const current = config[agentId] ?? { enabled: true, cron: "0 */1 * * *" };
+	const current = config[agentId] ?? { ...DEFAULT_SCHEDULE };
 	const merged: AgentSchedule = { ...current, ...patch };
 	config[agentId] = merged;
 	await saveScheduleConfig(config);

@@ -1,7 +1,7 @@
-import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir } from "node:fs/promises";
 import { z } from "zod";
 import { PRIMER_HOME, TOKENS_PATH, type ProviderId } from "../config.js";
+import { readJsonFile, writeJsonFileAtomic } from "../utils.js";
 
 const CodexTokensSchema = z.object({
 	provider: z.literal("codex"),
@@ -35,28 +35,13 @@ const FileSchema = z.object({
 export type TokensFile = z.infer<typeof FileSchema>;
 
 export async function loadTokens(): Promise<TokensFile> {
-	try {
-		const raw = await readFile(TOKENS_PATH, "utf8");
-		return FileSchema.parse(JSON.parse(raw));
-	} catch (err: unknown) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
-		throw err;
-	}
+	return readJsonFile(TOKENS_PATH, FileSchema, { missing: {} });
 }
 
 export async function saveTokens(tokens: ProviderTokens): Promise<void> {
-	await mkdir(dirname(TOKENS_PATH), { recursive: true });
 	const current = await loadTokens();
 	const next: TokensFile = { ...current, [tokens.provider]: tokens } as TokensFile;
-	await writeFile(TOKENS_PATH, JSON.stringify(next, null, 2), "utf8");
-	// Best-effort restrict perms on POSIX; no-op on Windows.
-	if (process.platform !== "win32") {
-		try {
-			await chmod(TOKENS_PATH, 0o600);
-		} catch {
-			/* ignore */
-		}
-	}
+	await writeJsonFileAtomic(TOKENS_PATH, next, { mode: 0o600, chmod: 0o600 });
 }
 
 export async function getTokens<P extends ProviderId>(

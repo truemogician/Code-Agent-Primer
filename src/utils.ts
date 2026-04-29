@@ -1,3 +1,6 @@
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import { z } from "zod";
 import type { QuotaSnapshot, QuotaWindow, RateBucket } from "./agents/agent.js";
 
 const PREFIX = "[primer]";
@@ -15,6 +18,57 @@ export const log = {
 		console.error(PREFIX, ...args);
 	},
 };
+
+// #endregion
+
+// #region JSON helpers
+
+export async function readJsonFile<T>(file: string, schema: z.ZodType<T>): Promise<T>;
+export async function readJsonFile<T, M>(file: string, schema: z.ZodType<T>, opts: { missing: M; }): Promise<T | M>;
+export async function readJsonFile<T, M>(
+	file: string,
+	schema: z.ZodType<T>,
+	opts?: { missing: M; },
+): Promise<T | M> {
+	try {
+		const raw = await readFile(file, "utf8");
+		return schema.parse(JSON.parse(raw));
+	}
+	catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT" && opts)
+			return opts.missing;
+		throw withPath(file, "read", err);
+	}
+}
+
+export async function writeJsonFileAtomic(
+	file: string,
+	data: unknown,
+	opts: { mode?: number; chmod?: number; } = {},
+): Promise<void> {
+	await mkdir(dirname(file), { recursive: true });
+	const tmp = `${file}.tmp`;
+	await writeFile(tmp, JSON.stringify(data, null, 2), { encoding: "utf8", mode: opts.mode });
+	await rename(tmp, file);
+	if (opts.chmod !== undefined && process.platform !== "win32") {
+		try {
+			await chmod(file, opts.chmod);
+		}
+		catch {
+			/* ignore */
+		}
+	}
+}
+
+function withPath(file: string, action: "read", err: unknown): Error {
+	if (err instanceof z.ZodError)
+		return new Error(`Failed to ${action} JSON file ${file}: ${err.message}`, { cause: err });
+	if (err instanceof SyntaxError)
+		return new Error(`Failed to ${action} JSON file ${file}: ${err.message}`, { cause: err });
+	return err instanceof Error
+		? new Error(`Failed to ${action} JSON file ${file}: ${err.message}`, { cause: err })
+		: new Error(`Failed to ${action} JSON file ${file}: ${String(err)}`);
+}
 
 // #endregion
 

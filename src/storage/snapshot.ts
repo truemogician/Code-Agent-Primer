@@ -1,6 +1,7 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { z } from "zod";
 import { PRIMER_HOME } from "../config.js";
+import { readJsonFile, writeJsonFileAtomic } from "../utils.js";
 
 const SNAPSHOTS_DIR = join(PRIMER_HOME, "snapshots");
 
@@ -15,28 +16,24 @@ export interface Snapshot {
 	parsed?: Record<string, unknown>;
 }
 
+const SnapshotSchema: z.ZodType<Snapshot> = z.object({
+	agentId: z.string(),
+	updatedAt: z.number(),
+	headers: z.record(z.string(), z.string()),
+	parsed: z.record(z.string(), z.unknown()).optional(),
+});
+
 export async function readSnapshot(agentId: string): Promise<Snapshot | null> {
-	try {
-		const raw = await readFile(pathFor(agentId), "utf8");
-		return JSON.parse(raw) as Snapshot;
-	}
-	catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT")
-			return null;
-		throw err;
-	}
+	return readJsonFile(pathFor(agentId), SnapshotSchema, { missing: null });
 }
 
 export async function writeSnapshot(agentId: string, data: Omit<Snapshot, "agentId" | "updatedAt"> & Partial<Pick<Snapshot, "updatedAt">>): Promise<void> {
 	const file = pathFor(agentId);
-	await mkdir(dirname(file), { recursive: true });
 	const snapshot: Snapshot = {
 		agentId,
 		updatedAt: data.updatedAt ?? Math.floor(Date.now() / 1000),
 		headers: data.headers,
 		parsed: data.parsed,
 	};
-	const tmp = `${file}.tmp`;
-	await writeFile(tmp, JSON.stringify(snapshot, null, 2), { encoding: "utf8", mode: 0o600 });
-	await rename(tmp, file);
+	await writeJsonFileAtomic(file, snapshot, { mode: 0o600 });
 }

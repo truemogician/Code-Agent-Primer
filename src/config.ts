@@ -6,7 +6,8 @@ export const TOKENS_PATH = join(PRIMER_HOME, "tokens.json");
 export const SNAPSHOT_PATH = join(PRIMER_HOME, "usage_snapshot.json");
 export const CONFIG_PATH = join(PRIMER_HOME, "config.json");
 
-export type ProviderId = "codex" | "claude";
+export const PROVIDER_IDS = ["codex", "claude"] as const;
+export type ProviderId = typeof PROVIDER_IDS[number];
 
 export const CODEX = {
 	clientId: "app_EMoamEEZ73f0CkXaXp7hrann",

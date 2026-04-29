@@ -22,6 +22,17 @@ interface TokenExchangeResponse {
 	token_type?: string;
 }
 
+interface OpenAIAuthClaims {
+	organization_id?: unknown;
+	project_id?: unknown;
+	chatgpt_account_id?: unknown;
+}
+
+interface JwtClaims {
+	"https://api.openai.com/auth"?: OpenAIAuthClaims;
+	[claim: string]: unknown;
+}
+
 class CodexAgent extends CodeAgent {
 	readonly id = "codex";
 	readonly displayName = "Codex (OpenAI)";
@@ -160,12 +171,13 @@ class CodexAgent extends CodeAgent {
 		return typeof id === "string" ? id : undefined;
 	}
 
-	private decodeIdTokenClaims(idToken: string | undefined): Record<string, any> | undefined {
+	private decodeIdTokenClaims(idToken: string | undefined): JwtClaims | undefined {
 		if (!idToken) return undefined;
 		const parts = idToken.split(".");
 		if (parts.length < 2) return undefined;
 		try {
-			return JSON.parse(Buffer.from(parts[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+			const claims = JSON.parse(Buffer.from(parts[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as unknown;
+			return claims && typeof claims === "object" ? claims as JwtClaims : undefined;
 		}
 		catch {
 			return undefined;
