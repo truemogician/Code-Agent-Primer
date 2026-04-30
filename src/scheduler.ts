@@ -32,16 +32,30 @@ function getResetMs(window: QuotaWindow): number | undefined {
 // #region Follow-up chain
 
 /** Drives the optional "chain follow-up primers across window boundaries" feature.
- *  A controller arms one probe near the end of the current window; if usage was
- *  detected, it then arms a follow-up anchor primer just after the window resets,
- *  feeding a fresh snapshot back into {@link arm} to continue the chain. */
+ *
+ *  Near the end of each window the controller fires a `--no-consume` probe to
+ *  detect whether the user has been active. The follow-up anchor is skipped only
+ *  when both:
+ *  1. **Idle** — `usedPercent` did not change beyond the noise threshold since
+ *     the last anchor.
+ *  2. **Shift risk** — firing the next anchor would push the resulting window's
+ *     reset past the upcoming cron tick, so the cron tick would land inside our
+ *     anchored window and fail to anchor a fresh one (drifting the schedule).
+ *
+ *  In every other case the chain continues, so a returning user gets coverage
+ *  again the moment they resume activity. */
 class FollowUpController {
 	private readonly timers = new Set<NodeJS.Timeout>();
+	private nextCronAfter: (after: Date) => Date | null = () => null;
 
 	constructor(
 		private readonly agent: CodeAgent,
 		private readonly probeLeadMs: number,
 	) { }
+
+	setNextCronAfter(fn: (after: Date) => Date | null): void {
+		this.nextCronAfter = fn;
+	}
 
 	arm(snapshot: QuotaSnapshot): void {
 		const id = this.agent.followUpWindowId;
@@ -63,8 +77,9 @@ class FollowUpController {
 			return;
 		}
 		const baseline = w.usedPercent ?? 0;
+		const windowMinutes = w.windowMinutes;
 		log.info(`${this.agent.id} follow-up: probe in ${Math.round(probeDelay / 1000)}s (baseline=${baseline.toFixed(1)}%).`);
-		this.schedule(probeDelay, () => this.runProbe(baseline));
+		this.schedule(probeDelay, () => this.runProbe(baseline, windowMinutes));
 	}
 
 	cancel(): void {
@@ -73,24 +88,42 @@ class FollowUpController {
 		this.timers.clear();
 	}
 
-	private async runProbe(baseline: number): Promise<void> {
+	private async runProbe(baseline: number, windowMinutes: number | undefined): Promise<void> {
 		try {
 			const result = await sendPrimer(this.agent.id, { consume: false });
 			const id = this.agent.followUpWindowId!;
 			const w = result.snapshot.windows[id];
 			const used = w?.usedPercent ?? baseline;
-			if (used - baseline < NO_USAGE_THRESHOLD_PERCENT) {
-				log.info(`${this.agent.id} follow-up: no usage detected (baseline=${baseline.toFixed(1)}%, current=${used.toFixed(1)}%); chain stopped.`);
+			const isActive = used - baseline >= NO_USAGE_THRESHOLD_PERCENT;
+
+			const remaining = w ? getResetMs(w) : 0;
+			const anchorDelayMs = Math.max(0, remaining ?? 0) + FOLLOW_UP_BUFFER_MS;
+			const anchorAt = new Date(Date.now() + anchorDelayMs);
+			const effectiveWindowMinutes = w?.windowMinutes ?? windowMinutes;
+
+			if (this.wouldShiftPastNextCron(anchorAt, effectiveWindowMinutes) && !isActive) {
+				log.info(`${this.agent.id} follow-up: idle and would shift next anchor past upcoming cron; chain stopped.`);
 				return;
 			}
-			const remaining = w ? getResetMs(w) : 0;
-			const delay = Math.max(0, remaining ?? 0) + FOLLOW_UP_BUFFER_MS;
-			log.info(`${this.agent.id} follow-up: usage detected (Δ=${(used - baseline).toFixed(1)}%); next anchor in ${Math.round(delay / 1000)}s.`);
-			this.schedule(delay, () => this.runAnchor());
+			const reason = isActive
+				? `usage detected (Δ=${(used - baseline).toFixed(1)}%)`
+				: "idle but no schedule shift";
+			log.info(`${this.agent.id} follow-up: ${reason}; next anchor in ${Math.round(anchorDelayMs / 1000)}s.`);
+			this.schedule(anchorDelayMs, () => this.runAnchor());
 		}
 		catch (err) {
 			log.error(`${this.agent.id} follow-up probe failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
+	}
+
+	private wouldShiftPastNextCron(anchorAt: Date, windowMinutes: number | undefined): boolean {
+		if (windowMinutes === undefined)
+			return false;
+		const nextCron = this.nextCronAfter(anchorAt);
+		if (!nextCron)
+			return false;
+		const anchorWindowEnd = anchorAt.getTime() + windowMinutes * 60_000;
+		return anchorWindowEnd > nextCron.getTime();
 	}
 
 	private async runAnchor(): Promise<void> {
@@ -148,6 +181,7 @@ export function startScheduler(config: ScheduleConfig, opts: { fireOnStart?: boo
 			}
 		}
 		const job = new Cron(schedule.cron, { name: `primer-${agent.id}` }, () => { void runOnce(agent, controller); });
+		controller?.setNextCronAfter(after => job.nextRun(after));
 		jobs.push(job);
 		const next = job.nextRun();
 		log.info(`scheduled ${chalk.cyan(agent.id)} cron="${schedule.cron}" follow-up=${!!controller} next=${next ? formatLocalTime(next) : "n/a"}`);

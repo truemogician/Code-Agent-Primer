@@ -159,12 +159,12 @@ class ClaudeAgent extends CodeAgent {
 
 	parseQuota(raw: Record<string, string>): QuotaSnapshot {
 		const snapshot: QuotaSnapshot = { windows: {}, buckets: {}, raw };
-		const unifiedWindows: Array<[string, string]> = [
-			["5h", "session-5h"],
-			["7d", "session-7d"],
-			["overage", "overage"],
+		const unifiedWindows: Array<[string, string, number | undefined]> = [
+			["5h", "session-5h", 5 * 60],
+			["7d", "session-7d", 7 * 24 * 60],
+			["overage", "overage", undefined],
 		];
-		for (const [tag, id] of unifiedWindows) {
+		for (const [tag, id, windowMinutes] of unifiedWindows) {
 			const utilization = num(raw[`${PREFIX}unified-${tag}-utilization`]);
 			const reset = raw[`${PREFIX}unified-${tag}-reset`];
 			const status = raw[`${PREFIX}unified-${tag}-status`];
@@ -174,6 +174,7 @@ class ClaudeAgent extends CodeAgent {
 				label: status ? `${tag} (${status})` : tag,
 				usedPercent: utilization !== undefined ? utilization * 100 : undefined,
 				resetAt: reset ? new Date(Number(reset) * 1000).toISOString() : undefined,
+				windowMinutes,
 			};
 		}
 		const reqLimit = num(raw[`${PREFIX}requests-limit`]);
