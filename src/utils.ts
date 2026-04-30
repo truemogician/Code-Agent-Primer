@@ -1,9 +1,11 @@
+import chalk from "chalk";
+import { format, intervalToDuration } from "date-fns";
+import { z } from "zod";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { z } from "zod";
 import type { QuotaSnapshot, QuotaWindow, RateBucket } from "./agents/agent.js";
 
-const PREFIX = "[primer]";
+const PREFIX = chalk.gray("[primer]");
 
 // #region Logging
 
@@ -12,12 +14,41 @@ export const log = {
 		console.log(PREFIX, ...args);
 	},
 	warn(...args: unknown[]): void {
-		console.warn(PREFIX, ...args);
+		console.warn(PREFIX, chalk.yellow("warn"), ...args);
 	},
 	error(...args: unknown[]): void {
-		console.error(PREFIX, ...args);
+		console.error(PREFIX, chalk.red("error"), ...args);
 	},
 };
+
+// #endregion
+
+// #region Time formatting
+
+/** Format a Date as `YYYY-MM-DD HH:MM:SS <tz>` in the local timezone. */
+export function formatLocalTime(date: Date): string {
+	return format(date, "yyyy-MM-dd HH:mm:ss 'UTC'xxx");
+}
+
+/** Format a duration in seconds as a precise short string with the two largest
+ *  non-zero units (e.g. `3d 4h`, `2m 15s`, `45s`). */
+export function formatDuration(seconds: number): string {
+	if (seconds < 0)
+		seconds = 0;
+	const d = intervalToDuration({ start: 0, end: seconds * 1000 });
+	const parts: Array<[number | undefined, string]> = [
+		[d.years, "y"],
+		[d.months, "mo"],
+		[d.days, "d"],
+		[d.hours, "h"],
+		[d.minutes, "m"],
+		[d.seconds, "s"],
+	];
+	const nonZero = parts.filter((p): p is [number, string] => !!p[0]);
+	if (nonZero.length === 0)
+		return "0s";
+	return nonZero.slice(0, 2).map(([n, unit]) => `${n}${unit}`).join(" ");
+}
 
 // #endregion
 
@@ -101,22 +132,6 @@ export function num(s: string | undefined): number | undefined {
 
 // #region Quota formatting
 
-function formatDuration(seconds: number): string {
-	if (seconds < 0)
-		seconds = 0;
-	const d = Math.floor(seconds / 86400);
-	const h = Math.floor((seconds % 86400) / 3600);
-	const m = Math.floor((seconds % 3600) / 60);
-	const s = Math.floor(seconds % 60);
-	if (d > 0)
-		return `${d}d ${h}h`;
-	if (h > 0)
-		return `${h}h ${m}m`;
-	if (m > 0)
-		return `${m}m ${s}s`;
-	return `${s}s`;
-}
-
 function formatReset(window: QuotaWindow | RateBucket): string | undefined {
 	const w = window as QuotaWindow;
 	if (w.resetAfterSeconds !== undefined)
@@ -125,10 +140,10 @@ function formatReset(window: QuotaWindow | RateBucket): string | undefined {
 		const target = new Date(window.resetAt);
 		if (!Number.isNaN(target.getTime())) {
 			const deltaSec = Math.floor((target.getTime() - Date.now()) / 1000);
-			const iso = target.toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
+			const local = formatLocalTime(target);
 			return deltaSec > 0
-				? `resets at ${iso} (in ${formatDuration(deltaSec)})`
-				: `resets at ${iso}`;
+				? `resets at ${local} (in ${formatDuration(deltaSec)})`
+				: `resets at ${local}`;
 		}
 	}
 	return undefined;
@@ -137,7 +152,14 @@ function formatReset(window: QuotaWindow | RateBucket): string | undefined {
 function bar(percent: number, width = 20): string {
 	const clamped = Math.max(0, Math.min(100, percent));
 	const filled = Math.round((clamped / 100) * width);
-	return `[${"█".repeat(filled)}${"·".repeat(width - filled)}]`;
+	const color = clamped >= 90 ? chalk.red : clamped >= 60 ? chalk.yellow : chalk.green;
+	return `[${color("█".repeat(filled))}${chalk.gray("·".repeat(width - filled))}]`;
+}
+
+function colorPercent(percent: number): (s: string) => string {
+	if (percent >= 90) return chalk.red;
+	if (percent >= 60) return chalk.yellow;
+	return chalk.green;
 }
 
 /** Render a `QuotaSnapshot` as human-readable lines. Returns the formatted block
@@ -155,23 +177,25 @@ export function formatQuotaSnapshot(snapshot: QuotaSnapshot): string {
 	);
 	for (const [key, w] of windowEntries) {
 		const name = (w.label ?? key).padEnd(maxKeyLen);
-		const pct = w.usedPercent !== undefined ? `${w.usedPercent.toFixed(1).padStart(5)}% used` : "       ?% used";
+		const pct = w.usedPercent !== undefined
+			? `${colorPercent(w.usedPercent)(w.usedPercent.toFixed(1).padStart(5) + "%")} used`
+			: `${chalk.gray("   ?%")} used`;
 		const visual = w.usedPercent !== undefined ? ` ${bar(w.usedPercent)}` : "";
 		const reset = formatReset(w);
-		lines.push(`  ${name}  ${pct}${visual}${reset ? `  •  ${reset}` : ""}`);
+		lines.push(`  ${chalk.cyan(name)}  ${pct}${visual}${reset ? `  ${chalk.gray("•")}  ${chalk.gray(reset)}` : ""}`);
 	}
 	for (const [key, b] of bucketEntries) {
 		const name = (b.label ?? key).padEnd(maxKeyLen);
 		const usage = b.limit !== undefined && b.remaining !== undefined
-			? `${b.remaining}/${b.limit} remaining`
+			? `${chalk.green(b.remaining)}/${b.limit} remaining`
 			: b.remaining !== undefined
-				? `${b.remaining} remaining`
-				: "(no usage data)";
+				? `${chalk.green(b.remaining)} remaining`
+				: chalk.gray("(no usage data)");
 		const reset = formatReset(b);
-		lines.push(`  ${name}  ${usage}${reset ? `  •  ${reset}` : ""}`);
+		lines.push(`  ${chalk.cyan(name)}  ${usage}${reset ? `  ${chalk.gray("•")}  ${chalk.gray(reset)}` : ""}`);
 	}
 	if (snapshot.retryAfterSeconds !== undefined)
-		lines.push(`  retry-after: ${formatDuration(snapshot.retryAfterSeconds)}`);
+		lines.push(`  ${chalk.yellow("retry-after")}: ${formatDuration(snapshot.retryAfterSeconds)}`);
 	return lines.join("\n");
 }
 

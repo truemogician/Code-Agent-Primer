@@ -1,3 +1,4 @@
+import chalk from "chalk";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { spawn } from "node:child_process";
@@ -9,7 +10,7 @@ import { loadScheduleConfig, updateAgentConfig, withDefaults } from "./storage/s
 import type { AgentSchedule } from "./storage/scheduleConfig.js";
 import type { CodeAgent } from "./agents/agent.js";
 import { AgentRegistry } from "./agents/registry.js";
-import { log, formatQuotaSnapshot } from "./utils.js";
+import { log, formatQuotaSnapshot, formatLocalTime } from "./utils.js";
 import packageJson from "../package.json" with { type: "json" };
 
 function openInBrowser(url: string): void {
@@ -51,11 +52,13 @@ async function showStatus(): Promise<void> {
 	const now = Math.floor(Date.now() / 1000);
 	const fmt = (label: string, t?: { obtained_at: number; expires_at?: number; }) => {
 		if (!t)
-			return `${label}: (not logged in)`;
-		const exp = t.expires_at ? `expires in ${t.expires_at - now}s` : "no expiry recorded";
-		return `${label}: obtained ${new Date(t.obtained_at * 1000).toISOString()} (${exp})`;
+			return `${chalk.cyan(label)}: ${chalk.gray("(not logged in)")}`;
+		const exp = t.expires_at
+			? (t.expires_at - now > 0 ? chalk.green(`expires in ${t.expires_at - now}s`) : chalk.red(`expired ${now - t.expires_at}s ago`))
+			: chalk.gray("no expiry recorded");
+		return `${chalk.cyan(label)}: obtained ${formatLocalTime(new Date(t.obtained_at * 1000))} (${exp})`;
 	};
-	console.log(`Primer home: ${PRIMER_HOME}`);
+	console.log(`Primer home: ${chalk.gray(PRIMER_HOME)}`);
 	for (const agent of AgentRegistry.list()) {
 		const t = (tokens as Record<string, { obtained_at: number; expires_at?: number; } | undefined>)[agent.id];
 		console.log(fmt(agent.id, t));
@@ -113,7 +116,8 @@ await yargs(hideBin(process.argv))
 		async argv => {
 			await ensureHomeDir();
 			const result = await sendPrimer(argv.agent as string, { consume: argv.consume });
-			log.info(`${result.agentId} → ${result.status} (firstRun=${result.firstRun}, consumed=${argv.consume})`);
+			const statusColor = result.status >= 400 ? chalk.red : result.status >= 300 ? chalk.yellow : chalk.green;
+			log.info(`${chalk.cyan(result.agentId)} → ${statusColor(result.status)} (firstRun=${result.firstRun}, consumed=${argv.consume})`);
 			if (argv.raw)
 				console.log(JSON.stringify(result.snapshot.raw, null, 2));
 			else

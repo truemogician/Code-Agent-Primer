@@ -1,10 +1,11 @@
+import chalk from "chalk";
 import { Cron } from "croner";
 import { AgentRegistry } from "./agents/registry.js";
 import type { CodeAgent, QuotaSnapshot, QuotaWindow } from "./agents/agent.js";
 import { sendPrimer } from "./primer/sender.js";
 import { loadScheduleConfig, withDefaults } from "./storage/scheduleConfig.js";
 import type { ScheduleConfig } from "./storage/scheduleConfig.js";
-import { log } from "./utils.js";
+import { log, formatLocalTime } from "./utils.js";
 
 export interface SchedulerHandle {
 	jobs: Cron[];
@@ -113,7 +114,8 @@ async function runOnce(agent: CodeAgent, controller?: FollowUpController): Promi
 		const result = await sendPrimer(agent.id, { consume: true });
 		const ms = Date.now() - start;
 		const summary = agent.summarize(result.snapshot);
-		log.info(`${new Date().toISOString()} ${agent.id} → ${result.status} (${ms}ms) ${summary}`);
+		const statusColor = result.status >= 400 ? chalk.red : result.status >= 300 ? chalk.yellow : chalk.green;
+		log.info(`${formatLocalTime(new Date())} ${chalk.cyan(agent.id)} → ${statusColor(result.status)} (${ms}ms) ${summary}`);
 		if (controller) {
 			controller.cancel();
 			controller.arm(result.snapshot);
@@ -122,7 +124,7 @@ async function runOnce(agent: CodeAgent, controller?: FollowUpController): Promi
 	catch (err) {
 		const ms = Date.now() - start;
 		const message = err instanceof Error ? err.message : String(err);
-		log.error(`${new Date().toISOString()} ${agent.id} → ERROR (${ms}ms): ${message}`);
+		log.error(`${formatLocalTime(new Date())} ${chalk.cyan(agent.id)} → ${chalk.red("ERROR")} (${ms}ms): ${message}`);
 	}
 }
 
@@ -148,7 +150,7 @@ export function startScheduler(config: ScheduleConfig, opts: { fireOnStart?: boo
 		const job = new Cron(schedule.cron, { name: `primer-${agent.id}` }, () => { void runOnce(agent, controller); });
 		jobs.push(job);
 		const next = job.nextRun();
-		log.info(`scheduled ${agent.id} cron="${schedule.cron}" follow-up=${!!controller} next=${next ? next.toISOString() : "n/a"}`);
+		log.info(`scheduled ${chalk.cyan(agent.id)} cron="${schedule.cron}" follow-up=${!!controller} next=${next ? formatLocalTime(next) : "n/a"}`);
 		if (opts.fireOnStart)
 			void runOnce(agent, controller);
 	}
