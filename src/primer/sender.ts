@@ -6,46 +6,46 @@ import { log } from "../utils.js";
 
 export interface PrimerResult {
 	agentId: string;
+	accountId: string;
 	status: number;
 	snapshot: QuotaSnapshot;
 	headers: Record<string, string>;
 	firstRun: boolean;
 }
 
-/** Print every quota-related header on the first-ever primer call for an agent.
- *  Phase 3: this is how we discover unknown headers (e.g. an Anthropic 5h
- *  session-window header that surfaces only on real traffic). */
-function logFirstRunHeaders(agent: CodeAgent, headers: Record<string, string>): void {
+/** Print every quota-related header on the first-ever primer call for an agent+account. */
+function logFirstRunHeaders(agent: CodeAgent, accountId: string, headers: Record<string, string>): void {
 	const interesting = Object.entries(headers).filter(([k]) => agent.isInterestingHeader(k));
 	if (interesting.length === 0) {
-		log.info(`first ${agent.id} run — no quota-related headers were returned.`);
+		log.info(`first ${agent.id}:${accountId} run — no quota-related headers were returned.`);
 		return;
 	}
-	log.info(`first ${agent.id} run — recording quota-related response headers:`);
+	log.info(`first ${agent.id}:${accountId} run — recording quota-related response headers:`);
 	for (const [k, v] of interesting.sort(([a], [b]) => a.localeCompare(b)))
 		console.log(`  ${k}: ${v}`);
 }
 
-/** Resolve user-configured model/primer overrides for an agent, falling back to its defaults. */
-async function resolveOverrides(agentId: string, explicit?: SendRequestOptions): Promise<SendRequestOptions> {
+/** Resolve user-configured model/primer overrides for an agent+account, falling
+ *  back to the agent's defaults. */
+async function resolveOverrides(agentId: string, accountId: string, explicit?: SendRequestOptions): Promise<SendRequestOptions> {
 	const config = await loadScheduleConfig();
-	const stored = config[agentId];
+	const stored = config[agentId]?.[accountId];
 	return {
 		model: explicit?.model ?? stored?.model,
 		primer: explicit?.primer ?? stored?.primer,
 	};
 }
 
-export async function sendPrimer(agentId: string, opts?: SendRequestOptions): Promise<PrimerResult> {
+export async function sendPrimer(agentId: string, accountId: string, opts?: SendRequestOptions): Promise<PrimerResult> {
 	const agent = AgentRegistry.get(agentId);
-	const previous = await readSnapshot(agent.id);
+	const previous = await readSnapshot(agent.id, accountId);
 	const firstRun = previous === null;
-	const overrides = await resolveOverrides(agent.id, opts);
-	const { status, headers } = await agent.sendRequest({ ...overrides, consume: opts?.consume });
+	const overrides = await resolveOverrides(agent.id, accountId, opts);
+	const { status, headers } = await agent.sendRequest(accountId, { ...overrides, consume: opts?.consume });
 	const selected = agent.selectQuotaHeaders(headers);
 	const snapshot = agent.parseQuota(selected);
-	await writeSnapshot(agent.id, { headers: selected, parsed: snapshot as unknown as Record<string, unknown> });
+	await writeSnapshot(agent.id, accountId, { headers: selected, parsed: snapshot as unknown as Record<string, unknown> });
 	if (firstRun)
-		logFirstRunHeaders(agent, headers);
-	return { agentId: agent.id, status, snapshot, headers: selected, firstRun };
+		logFirstRunHeaders(agent, accountId, headers);
+	return { agentId: agent.id, accountId, status, snapshot, headers: selected, firstRun };
 }

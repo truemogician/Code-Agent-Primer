@@ -20,18 +20,34 @@ const AgentScheduleSchema = z.object({
 	followUpProbeLeadMinutes: z.number().positive().default(DEFAULT_PROBE_LEAD_MINUTES),
 });
 
-const ScheduleConfigSchema = z.record(z.string(), AgentScheduleSchema);
+const AccountMapSchema = z.record(z.string(), AgentScheduleSchema);
+const ScheduleConfigSchema = z.record(z.string(), AccountMapSchema);
 
 export type AgentSchedule = z.infer<typeof AgentScheduleSchema>;
-/** Map from agent id (e.g. `"codex"`, `"claude"`) to its schedule. */
+/** Map from agent id → (account id → schedule). */
 export type ScheduleConfig = z.infer<typeof ScheduleConfigSchema>;
 
-/** Fill in defaults for any agent ids missing from the on-disk config. */
-export function withDefaults(config: ScheduleConfig, agentIds: string[]): ScheduleConfig {
-	const out: ScheduleConfig = { ...config };
-	for (const id of agentIds) {
-		if (!out[id])
-			out[id] = { ...DEFAULT_SCHEDULE };
+/** Iterate over every (agentId, accountId, schedule) triple in `config`. */
+export function* iterSchedules(config: ScheduleConfig): Iterable<{ agentId: string; accountId: string; schedule: AgentSchedule; }> {
+	for (const [agentId, accounts] of Object.entries(config)) {
+		for (const [accountId, schedule] of Object.entries(accounts))
+			yield { agentId, accountId, schedule };
+	}
+}
+
+/** Fill in defaults for agent/account pairs missing from the on-disk config.
+ *  `pairs` enumerates the known (agent, account) combinations to ensure exist. */
+export function withDefaults(
+	config: ScheduleConfig,
+	pairs: Iterable<{ agentId: string; accountId: string; }>,
+): ScheduleConfig {
+	const out: ScheduleConfig = {};
+	for (const [agentId, accounts] of Object.entries(config))
+		out[agentId] = { ...accounts };
+	for (const { agentId, accountId } of pairs) {
+		const accounts = out[agentId] ?? (out[agentId] = {});
+		if (!accounts[accountId])
+			accounts[accountId] = { ...DEFAULT_SCHEDULE };
 	}
 	return out;
 }
@@ -44,12 +60,17 @@ export async function saveScheduleConfig(config: ScheduleConfig): Promise<void> 
 	await writeJsonFileAtomic(CONFIG_PATH, config);
 }
 
-/** Merge a partial update into the on-disk schedule for one agent. Persists the result. */
-export async function updateAgentConfig(agentId: string, patch: Partial<AgentSchedule>): Promise<AgentSchedule> {
+/** Merge a partial update into the on-disk schedule for one agent+account. */
+export async function updateAgentConfig(
+	agentId: string,
+	accountId: string,
+	patch: Partial<AgentSchedule>,
+): Promise<AgentSchedule> {
 	const config = await loadScheduleConfig();
-	const current = config[agentId] ?? { ...DEFAULT_SCHEDULE };
+	const accounts = config[agentId] ?? (config[agentId] = {});
+	const current = accounts[accountId] ?? { ...DEFAULT_SCHEDULE };
 	const merged: AgentSchedule = { ...current, ...patch };
-	config[agentId] = merged;
+	accounts[accountId] = merged;
 	await saveScheduleConfig(config);
 	return merged;
 }

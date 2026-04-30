@@ -78,6 +78,8 @@ export interface ExchangeArgs {
 	code: string;
 	verifier: string;
 	state: string;
+	/** Account id under which to persist the resulting tokens. */
+	accountId: string;
 }
 
 export abstract class CodeAgent {
@@ -104,8 +106,9 @@ export abstract class CodeAgent {
 	}
 
 	/** Template-method implementation of the full PKCE / loopback / authorize flow.
-	 *  Subclasses provide the `exchangeAndPersist` step. */
-	async login(opts: LoginOptions = {}): Promise<void> {
+	 *  Subclasses provide the `exchangeAndPersist` step. The exchanged tokens
+	 *  are persisted under `accountId`. */
+	async login(accountId: string, opts: LoginOptions = {}): Promise<void> {
 		const clientId = await this.resolveClientId();
 		const { verifier, challenge } = createPkcePair();
 		const state = randomState();
@@ -142,7 +145,7 @@ export abstract class CodeAgent {
 			code = cb.code;
 		}
 
-		await this.exchangeAndPersist({ clientId, code, verifier, state });
+		await this.exchangeAndPersist({ clientId, code, verifier, state, accountId });
 	}
 
 	private async promptForCode(): Promise<string> {
@@ -156,14 +159,15 @@ export abstract class CodeAgent {
 		}
 	}
 
-	/** Trade an authorization code for tokens and persist them. */
+	/** Trade an authorization code for tokens and persist them under `args.accountId`. */
 	protected abstract exchangeAndPersist(args: ExchangeArgs): Promise<void>;
 
-	/** Whether stored credentials exist for this agent. */
-	abstract isAuthenticated(): Promise<boolean>;
+	/** Whether stored credentials exist for the given account. */
+	abstract isAuthenticated(accountId: string): Promise<boolean>;
 
-	/** Issue the minimal primer HTTP call. Implementations must drain the response body. */
-	abstract sendRequest(opts: SendRequestOptions): Promise<RawPrimerResponse>;
+	/** Issue the minimal primer HTTP call using credentials for `accountId`.
+	 *  Implementations must drain the response body. */
+	abstract sendRequest(accountId: string, opts: SendRequestOptions): Promise<RawPrimerResponse>;
 
 	/** Filter the full response headers down to the ones this agent treats as quota-related. */
 	abstract selectQuotaHeaders(headers: Record<string, string>): Record<string, string>;

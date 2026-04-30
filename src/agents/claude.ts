@@ -35,7 +35,7 @@ class ClaudeAgent extends CodeAgent {
 		manualPaste: true,
 	};
 
-	protected async exchangeAndPersist({ clientId, code, verifier, state }: ExchangeArgs): Promise<void> {
+	protected async exchangeAndPersist({ clientId, code, verifier, state, accountId }: ExchangeArgs): Promise<void> {
 		const tokenRes = await fetch(this.oauth.tokenUrl, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
@@ -59,17 +59,17 @@ class ClaudeAgent extends CodeAgent {
 			throw new Error(`Claude token exchange failed (${tokenRes.status})`);
 		}
 		const tokenJson = (await tokenRes.json()) as ClaudeTokenResponse;
-		await this.persistTokenResponse(tokenJson);
-		console.log("✓ Claude tokens saved.");
+		await this.persistTokenResponse(accountId, tokenJson);
+		console.log(`✓ Claude tokens saved for account "${accountId}".`);
 	}
 
-	async isAuthenticated(): Promise<boolean> {
-		const t = await getTokens("claude");
+	async isAuthenticated(accountId: string): Promise<boolean> {
+		const t = await getTokens("claude", accountId);
 		return !!t;
 	}
 
 	/** Persist a token response from either authorization_code or refresh_token grants. */
-	private async persistTokenResponse(tokenJson: ClaudeTokenResponse, fallbackRefreshToken?: string): Promise<ClaudeTokens> {
+	private async persistTokenResponse(accountId: string, tokenJson: ClaudeTokenResponse, fallbackRefreshToken?: string): Promise<ClaudeTokens> {
 		const obtainedAt = Math.floor(Date.now() / 1000);
 		const tokens: ClaudeTokens = {
 			provider: "claude",
@@ -79,11 +79,11 @@ class ClaudeAgent extends CodeAgent {
 			scopes: tokenJson.scope ? tokenJson.scope.split(/\s+/) : this.oauth.scope.split(/\s+/),
 			obtained_at: obtainedAt,
 		};
-		await saveTokens(tokens);
+		await saveTokens(accountId, tokens);
 		return tokens;
 	}
 
-	private async refreshTokens(refreshToken: string): Promise<ClaudeTokens> {
+	private async refreshTokens(accountId: string, refreshToken: string): Promise<ClaudeTokens> {
 		const res = await fetch(this.oauth.tokenUrl, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
@@ -98,29 +98,29 @@ class ClaudeAgent extends CodeAgent {
 			throw new Error(`Claude token refresh failed (${res.status}): ${body.slice(0, 300)}`);
 		}
 		const json = (await res.json()) as ClaudeTokenResponse;
-		return this.persistTokenResponse(json, refreshToken);
+		return this.persistTokenResponse(accountId, json, refreshToken);
 	}
 
 	/** Return a usable token, refreshing proactively if it is within 60s of expiry. */
-	private async getValidTokens(): Promise<ClaudeTokens> {
-		let tokens = await getTokens("claude");
+	private async getValidTokens(accountId: string): Promise<ClaudeTokens> {
+		let tokens = await getTokens("claude", accountId);
 		if (!tokens)
-			throw new Error("Claude not logged in. Run `code-agent-primer login claude` first.");
+			throw new Error(`Claude account "${accountId}" not logged in. Run \`code-agent-primer login claude:${accountId}\` first.`);
 		const now = Math.floor(Date.now() / 1000);
 		if (tokens.expires_at !== undefined && tokens.expires_at - now < 60) {
 			if (!tokens.refresh_token)
-				throw new Error("Claude access token expired and no refresh token is stored. Run `code-agent-primer login claude` again.");
-			tokens = await this.refreshTokens(tokens.refresh_token);
+				throw new Error(`Claude access token for account "${accountId}" expired and no refresh token is stored. Run \`code-agent-primer login claude:${accountId}\` again.`);
+			tokens = await this.refreshTokens(accountId, tokens.refresh_token);
 		}
 		return tokens;
 	}
 
-	async sendRequest({ model = this.defaultModel, primer = this.defaultPrimer }: SendRequestOptions): Promise<RawPrimerResponse> {
-		let tokens = await this.getValidTokens();
+	async sendRequest(accountId: string, { model = this.defaultModel, primer = this.defaultPrimer }: SendRequestOptions): Promise<RawPrimerResponse> {
+		let tokens = await this.getValidTokens(accountId);
 		let res = await this.callMessages(tokens, model, primer);
 		if (res.status === 401 && tokens.refresh_token) {
 			res.body?.cancel();
-			tokens = await this.refreshTokens(tokens.refresh_token);
+			tokens = await this.refreshTokens(accountId, tokens.refresh_token);
 			res = await this.callMessages(tokens, model, primer);
 		}
 		const headers = flattenHeaders(res.headers);

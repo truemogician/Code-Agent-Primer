@@ -3,8 +3,10 @@ import { Cron } from "croner";
 import { AgentRegistry } from "./agents/registry.js";
 import type { CodeAgent, QuotaSnapshot, QuotaWindow } from "./agents/agent.js";
 import { sendPrimer } from "./primer/sender.js";
-import { loadScheduleConfig, withDefaults } from "./storage/scheduleConfig.js";
+import { loadScheduleConfig, withDefaults, iterSchedules } from "./storage/scheduleConfig.js";
 import type { ScheduleConfig } from "./storage/scheduleConfig.js";
+import { listAccounts } from "./storage/tokens.js";
+import type { ProviderId } from "./config.js";
 import { log, formatLocalTime } from "./utils.js";
 
 export interface SchedulerHandle {
@@ -12,10 +14,7 @@ export interface SchedulerHandle {
 	stop(): void;
 }
 
-/** Below this delta the scheduler treats the user as inactive. The probe primer
- *  itself adds a tiny amount of usage; this margin prevents that from re-arming the chain. */
 const NO_USAGE_THRESHOLD_PERCENT = 0.5;
-/** Buffer past the window's nominal reset before firing the next anchor primer. */
 const FOLLOW_UP_BUFFER_MS = 5_000;
 
 function getResetMs(window: QuotaWindow): number | undefined {
@@ -32,24 +31,14 @@ function getResetMs(window: QuotaWindow): number | undefined {
 // #region Follow-up chain
 
 /** Drives the optional "chain follow-up primers across window boundaries" feature.
- *
- *  Near the end of each window the controller fires a `--no-consume` probe to
- *  detect whether the user has been active. The follow-up anchor is skipped only
- *  when both:
- *  1. **Idle** — `usedPercent` did not change beyond the noise threshold since
- *     the last anchor.
- *  2. **Shift risk** — firing the next anchor would push the resulting window's
- *     reset past the upcoming cron tick, so the cron tick would land inside our
- *     anchored window and fail to anchor a fresh one (drifting the schedule).
- *
- *  In every other case the chain continues, so a returning user gets coverage
- *  again the moment they resume activity. */
+ *  See {@link FollowUpController.runProbe} for the skip rule. */
 class FollowUpController {
 	private readonly timers = new Set<NodeJS.Timeout>();
 	private nextCronAfter: (after: Date) => Date | null = () => null;
 
 	constructor(
 		private readonly agent: CodeAgent,
+		private readonly accountId: string,
 		private readonly probeLeadMs: number,
 	) { }
 
@@ -57,28 +46,30 @@ class FollowUpController {
 		this.nextCronAfter = fn;
 	}
 
+	private get tag(): string { return `${this.agent.id}:${this.accountId}`; }
+
 	arm(snapshot: QuotaSnapshot): void {
 		const id = this.agent.followUpWindowId;
 		if (!id)
 			return;
 		const w = snapshot.windows[id];
 		if (!w) {
-			log.warn(`${this.agent.id} follow-up: window "${id}" missing from snapshot; skipping.`);
+			log.warn(`${this.tag} follow-up: window "${id}" missing from snapshot; skipping.`);
 			return;
 		}
 		const resetMs = getResetMs(w);
 		if (resetMs === undefined || resetMs <= 0) {
-			log.warn(`${this.agent.id} follow-up: cannot determine window reset; skipping.`);
+			log.warn(`${this.tag} follow-up: cannot determine window reset; skipping.`);
 			return;
 		}
 		const probeDelay = resetMs - this.probeLeadMs;
 		if (probeDelay <= 0) {
-			log.warn(`${this.agent.id} follow-up: window resets in <${this.probeLeadMs / 1000}s; skipping probe.`);
+			log.warn(`${this.tag} follow-up: window resets in <${this.probeLeadMs / 1000}s; skipping probe.`);
 			return;
 		}
 		const baseline = w.usedPercent ?? 0;
 		const windowMinutes = w.windowMinutes;
-		log.info(`${this.agent.id} follow-up: probe in ${Math.round(probeDelay / 1000)}s (baseline=${baseline.toFixed(1)}%).`);
+		log.info(`${this.tag} follow-up: probe in ${Math.round(probeDelay / 1000)}s (baseline=${baseline.toFixed(1)}%).`);
 		this.schedule(probeDelay, () => this.runProbe(baseline, windowMinutes));
 	}
 
@@ -90,7 +81,7 @@ class FollowUpController {
 
 	private async runProbe(baseline: number, windowMinutes: number | undefined): Promise<void> {
 		try {
-			const result = await sendPrimer(this.agent.id, { consume: false });
+			const result = await sendPrimer(this.agent.id, this.accountId, { consume: false });
 			const id = this.agent.followUpWindowId!;
 			const w = result.snapshot.windows[id];
 			const used = w?.usedPercent ?? baseline;
@@ -102,17 +93,17 @@ class FollowUpController {
 			const effectiveWindowMinutes = w?.windowMinutes ?? windowMinutes;
 
 			if (this.wouldShiftPastNextCron(anchorAt, effectiveWindowMinutes) && !isActive) {
-				log.info(`${this.agent.id} follow-up: idle and would shift next anchor past upcoming cron; chain stopped.`);
+				log.info(`${this.tag} follow-up: idle and would shift next anchor past upcoming cron; chain stopped.`);
 				return;
 			}
 			const reason = isActive
 				? `usage detected (Δ=${(used - baseline).toFixed(1)}%)`
 				: "idle but no schedule shift";
-			log.info(`${this.agent.id} follow-up: ${reason}; next anchor in ${Math.round(anchorDelayMs / 1000)}s.`);
+			log.info(`${this.tag} follow-up: ${reason}; next anchor in ${Math.round(anchorDelayMs / 1000)}s.`);
 			this.schedule(anchorDelayMs, () => this.runAnchor());
 		}
 		catch (err) {
-			log.error(`${this.agent.id} follow-up probe failed: ${err instanceof Error ? err.message : String(err)}`);
+			log.error(`${this.tag} follow-up probe failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 
@@ -127,7 +118,7 @@ class FollowUpController {
 	}
 
 	private async runAnchor(): Promise<void> {
-		await runOnce(this.agent, this);
+		await runOnce(this.agent, this.accountId, this);
 	}
 
 	private schedule(ms: number, fn: () => void | Promise<void>): void {
@@ -141,14 +132,15 @@ class FollowUpController {
 
 // #endregion
 
-async function runOnce(agent: CodeAgent, controller?: FollowUpController): Promise<void> {
+async function runOnce(agent: CodeAgent, accountId: string, controller?: FollowUpController): Promise<void> {
 	const start = Date.now();
+	const tag = `${agent.id}:${accountId}`;
 	try {
-		const result = await sendPrimer(agent.id, { consume: true });
+		const result = await sendPrimer(agent.id, accountId, { consume: true });
 		const ms = Date.now() - start;
 		const summary = agent.summarize(result.snapshot);
 		const statusColor = result.status >= 400 ? chalk.red : result.status >= 300 ? chalk.yellow : chalk.green;
-		log.info(`${formatLocalTime(new Date())} ${chalk.cyan(agent.id)} → ${statusColor(result.status)} (${ms}ms) ${summary}`);
+		log.info(`${formatLocalTime(new Date())} ${chalk.cyan(tag)} → ${statusColor(result.status)} (${ms}ms) ${summary}`);
 		if (controller) {
 			controller.cancel();
 			controller.arm(result.snapshot);
@@ -157,36 +149,48 @@ async function runOnce(agent: CodeAgent, controller?: FollowUpController): Promi
 	catch (err) {
 		const ms = Date.now() - start;
 		const message = err instanceof Error ? err.message : String(err);
-		log.error(`${formatLocalTime(new Date())} ${chalk.cyan(agent.id)} → ${chalk.red("ERROR")} (${ms}ms): ${message}`);
+		log.error(`${formatLocalTime(new Date())} ${chalk.cyan(tag)} → ${chalk.red("ERROR")} (${ms}ms): ${message}`);
 	}
 }
 
-export function startScheduler(config: ScheduleConfig, opts: { fireOnStart?: boolean; } = {}): SchedulerHandle {
+/** Enumerate every (agentId, accountId) pair that has stored credentials. */
+async function listKnownPairs(): Promise<Array<{ agentId: string; accountId: string; }>> {
+	const out: Array<{ agentId: string; accountId: string; }> = [];
+	for (const agent of AgentRegistry.list()) {
+		const accounts = await listAccounts(agent.id as ProviderId);
+		for (const accountId of accounts)
+			out.push({ agentId: agent.id, accountId });
+	}
+	return out;
+}
+
+export async function startScheduler(config: ScheduleConfig, opts: { fireOnStart?: boolean; } = {}): Promise<SchedulerHandle> {
 	const jobs: Cron[] = [];
 	const controllers: FollowUpController[] = [];
-	const effective = withDefaults(config, AgentRegistry.list().map(a => a.id));
-	for (const [agentId, schedule] of Object.entries(effective)) {
+	const effective = withDefaults(config, await listKnownPairs());
+	for (const { agentId, accountId, schedule } of iterSchedules(effective)) {
 		const agent = AgentRegistry.get(agentId);
+		const tag = `${agent.id}:${accountId}`;
 		if (!schedule.enabled) {
-			log.info(`${agent.id} disabled in config; skipping.`);
+			log.info(`${tag} disabled in config; skipping.`);
 			continue;
 		}
 		let controller: FollowUpController | undefined;
 		if (schedule.followUp) {
 			if (!agent.followUpWindowId)
-				log.warn(`${agent.id} follow-up requested but agent declares no followUpWindowId; ignoring.`);
+				log.warn(`${tag} follow-up requested but agent declares no followUpWindowId; ignoring.`);
 			else {
-				controller = new FollowUpController(agent, schedule.followUpProbeLeadMinutes * 60_000);
+				controller = new FollowUpController(agent, accountId, schedule.followUpProbeLeadMinutes * 60_000);
 				controllers.push(controller);
 			}
 		}
-		const job = new Cron(schedule.cron, { name: `primer-${agent.id}` }, () => { void runOnce(agent, controller); });
+		const job = new Cron(schedule.cron, { name: `primer-${tag}` }, () => { void runOnce(agent, accountId, controller); });
 		controller?.setNextCronAfter(after => job.nextRun(after));
 		jobs.push(job);
 		const next = job.nextRun();
-		log.info(`scheduled ${chalk.cyan(agent.id)} cron="${schedule.cron}" follow-up=${!!controller} next=${next ? formatLocalTime(next) : "n/a"}`);
+		log.info(`scheduled ${chalk.cyan(tag)} cron="${schedule.cron}" follow-up=${!!controller} next=${next ? formatLocalTime(next) : "n/a"}`);
 		if (opts.fireOnStart)
-			void runOnce(agent, controller);
+			void runOnce(agent, accountId, controller);
 	}
 	return {
 		jobs,

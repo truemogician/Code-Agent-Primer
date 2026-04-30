@@ -93,11 +93,11 @@ test("formatQuotaSnapshot renders windows, buckets, and retry hints", () => {
 });
 
 test("schedule config fills defaults and merges updates", async () => {
-	expect(schedule.withDefaults({}, ["codex"])).toEqual({
-		codex: { enabled: true, cron: "0 */1 * * *", followUp: false, followUpProbeLeadMinutes: 5 },
+	expect(schedule.withDefaults({}, [{ agentId: "codex", accountId: "1" }])).toEqual({
+		codex: { "1": { enabled: true, cron: "0 */1 * * *", followUp: false, followUpProbeLeadMinutes: 5 } },
 	});
 
-	const updated = await schedule.updateAgentConfig("codex", { enabled: false, model: "custom-model" });
+	const updated = await schedule.updateAgentConfig("codex", "1", { enabled: false, model: "custom-model" });
 	expect(updated).toEqual({
 		enabled: false,
 		cron: "0 */1 * * *",
@@ -109,18 +109,19 @@ test("schedule config fills defaults and merges updates", async () => {
 
 test("storage returns empty values for missing files", async () => {
 	expect(await tokens.loadTokens()).toEqual({});
-	expect(await snapshot.readSnapshot("missing")).toBeNull();
+	expect(await snapshot.readSnapshot("missing", "1")).toBeNull();
 });
 
 test("snapshot round-trips existing JSON shape", async () => {
-	await snapshot.writeSnapshot("codex", {
+	await snapshot.writeSnapshot("codex", "1", {
 		updatedAt: 123,
 		headers: { "x-codex-primary-used-percent": "1" },
 		parsed: { windows: {}, buckets: {}, raw: {} },
 	});
 
-	expect(await snapshot.readSnapshot("codex")).toEqual({
+	expect(await snapshot.readSnapshot("codex", "1")).toEqual({
 		agentId: "codex",
+		accountId: "1",
 		updatedAt: 123,
 		headers: { "x-codex-primary-used-percent": "1" },
 		parsed: { windows: {}, buckets: {}, raw: {} },
@@ -128,19 +129,19 @@ test("snapshot round-trips existing JSON shape", async () => {
 });
 
 test("snapshot rejects malformed JSON with path context", async () => {
-	const dir = join(home, "snapshots");
+	const dir = join(home, "snapshots", "codex");
 	await mkdir(dir, { recursive: true });
 	await writeFile(join(dir, "broken.json"), "{", "utf8");
 
-	expect(snapshot.readSnapshot("broken")).rejects.toThrow(/Failed to read JSON file .*broken\.json/);
+	expect(snapshot.readSnapshot("codex", "broken")).rejects.toThrow(/Failed to read JSON file .*broken\.json/);
 });
 
 test("snapshot rejects invalid JSON shape", async () => {
-	const dir = join(home, "snapshots");
+	const dir = join(home, "snapshots", "codex");
 	await mkdir(dir, { recursive: true });
-	await writeFile(join(dir, "invalid.json"), JSON.stringify({ agentId: "invalid" }), "utf8");
+	await writeFile(join(dir, "invalid.json"), JSON.stringify({ agentId: "codex" }), "utf8");
 
-	expect(snapshot.readSnapshot("invalid")).rejects.toThrow(/Failed to read JSON file .*invalid\.json/);
+	expect(snapshot.readSnapshot("codex", "invalid")).rejects.toThrow(/Failed to read JSON file .*invalid\.json/);
 });
 
 test("registry exposes known agents and rejects unknown agents", () => {
