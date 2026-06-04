@@ -2,17 +2,17 @@ import chalk from "chalk";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { spawn } from "node:child_process";
-import { ensureHomeDir, listAccounts, loadTokens, nextAutoAccountId } from "./storage/tokens.js";
+import packageJson from "../package.json" with { type: "json" };
+import type { CodeAgent } from "./agents/agent.js";
+import { AgentRegistry } from "./agents/registry.js";
 import { PRIMER_HOME, type ProviderId } from "./config.js";
 import { sendPrimer } from "./primer/sender.js";
 import { startSchedulerFromConfig } from "./scheduler.js";
-import { loadScheduleConfig, updateAgentConfig, withDefaults, iterSchedules } from "./storage/scheduleConfig.js";
-import type { AgentSchedule } from "./storage/scheduleConfig.js";
-import type { CodeAgent } from "./agents/agent.js";
-import { AgentRegistry } from "./agents/registry.js";
 import { parseAgentRef } from "./storage/account.js";
-import { log, formatQuotaSnapshot, formatLocalTime } from "./utils.js";
-import packageJson from "../package.json" with { type: "json" };
+import type { AgentSchedule } from "./storage/scheduleConfig.js";
+import { iterSchedules, loadScheduleConfig, updateAgentConfig, withDefaults } from "./storage/scheduleConfig.js";
+import { deleteAccount, ensureHomeDir, listAccounts, loadTokens, nextAutoAccountId } from "./storage/tokens.js";
+import { formatLocalTime, formatQuotaSnapshot, log } from "./utils.js";
 
 function openInBrowser(url: string): void {
 	const platform = process.platform;
@@ -112,6 +112,29 @@ await yargs(hideBin(process.argv))
 			if (!explicit)
 				log.info(`No account id provided; assigning auto-generated id "${accountId}".`);
 			await agent.login(accountId, { open: argv.open ? openInBrowser : undefined });
+		}
+	)
+	.command(
+		"remove <agent>",
+		"Remove stored auth tokens for an agent/account. Omit the account half (`<id>`) to remove all accounts of that agent.",
+		y => y
+			.positional("agent", {
+				describe: "Code agent ref, e.g. `codex` or `codex:work`",
+				type: "string",
+				demandOption: true,
+			}),
+		async argv => {
+			await ensureHomeDir();
+			const { agent, accountId } = resolveAgentRef(argv.agent as string);
+			const targets = accountId ? [accountId] : await listAccounts(agent.id as ProviderId);
+			if (targets.length === 0)
+				throw new Error(`No accounts logged in for ${agent.id}.`);
+			for (const id of targets) {
+				const removed = await deleteAccount(agent.id as ProviderId, id);
+				if (!removed)
+					throw new Error(`No auth entry found for ${agent.id}:${id}.`);
+				console.log(`[${agent.id}:${id}] removed auth entry.`);
+			}
 		}
 	)
 	.command("status", "Show stored token status across all agents and accounts", () => { }, showStatus)
