@@ -51,7 +51,8 @@ Account ids may be any string without `:`, whitespace, or path separators. Login
 | Command                               | Description                                                                             |
 | ------------------------------------- | --------------------------------------------------------------------------------------- |
 | `login <agent>`                       | OAuth login. Auto-assigns an account id if not provided.                                |
-| `remove <agent>`                      | Remove stored auth tokens; fan-out across all accounts under the agent if omitted.      |
+| `remove <agent>`                      | Remove stored auth tokens and schedules; omit the account to remove all for the agent. |
+| `clean`                               | Remove schedules with no stored auth tokens across all agents.                         |
 | `status`                              | Show every stored token across all agents and accounts.                                 |
 | `send <agent> [--no-consume] [--raw]` | Send a primer; fan-out across all accounts under the agent if account is omitted.       |
 | `run [--now]`                         | Start the scheduler (long-running). `--now` fires once per (agent, account) at startup. |

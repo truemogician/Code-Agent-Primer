@@ -10,7 +10,7 @@ import { sendPrimer } from "./primer/sender.js";
 import { startSchedulerFromConfig } from "./scheduler.js";
 import { parseAgentRef } from "./storage/account.js";
 import type { AgentSchedule } from "./storage/scheduleConfig.js";
-import { iterSchedules, loadScheduleConfig, updateAgentConfig, withDefaults } from "./storage/scheduleConfig.js";
+import { iterSchedules, loadScheduleConfig, saveScheduleConfig, updateAgentConfig, withDefaults } from "./storage/scheduleConfig.js";
 import { deleteAccount, ensureHomeDir, listAccounts, loadTokens, nextAutoAccountId } from "./storage/tokens.js";
 import { formatLocalTime, formatQuotaSnapshot, log } from "./utils.js";
 
@@ -116,7 +116,7 @@ await yargs(hideBin(process.argv))
 	)
 	.command(
 		"remove <agent>",
-		"Remove stored auth tokens for an agent/account. Omit the account half (`<id>`) to remove all accounts of that agent.",
+		"Remove stored auth tokens and schedule config for an agent/account. Omit the account half (`<id>`) to remove all accounts of that agent.",
 		y => y
 			.positional("agent", {
 				describe: "Code agent ref, e.g. `codex` or `codex:work`",
@@ -126,6 +126,8 @@ await yargs(hideBin(process.argv))
 		async argv => {
 			await ensureHomeDir();
 			const { agent, accountId } = resolveAgentRef(argv.agent as string);
+			const config = await loadScheduleConfig();
+			const accounts = config[agent.id];
 			const targets = accountId ? [accountId] : await listAccounts(agent.id as ProviderId);
 			if (targets.length === 0)
 				throw new Error(`No accounts logged in for ${agent.id}.`);
@@ -133,8 +135,42 @@ await yargs(hideBin(process.argv))
 				const removed = await deleteAccount(agent.id as ProviderId, id);
 				if (!removed)
 					throw new Error(`No auth entry found for ${agent.id}:${id}.`);
-				console.log(`[${agent.id}:${id}] removed auth entry.`);
+				if (accounts !== undefined && Object.hasOwn(accounts, id)) {
+					delete accounts[id];
+					if (Object.keys(accounts).length === 0)
+						delete config[agent.id];
+					await saveScheduleConfig(config);
+				}
+				console.log(`[${agent.id}:${id}] removed account.`);
 			}
+		}
+	)
+	.command(
+		"clean",
+		"Remove orphaned schedule entries that have no stored auth tokens across all agents.",
+		() => { },
+		async () => {
+			const config = await loadScheduleConfig();
+			const auth = new Map(Object.entries(await loadTokens()));
+			const removed: string[] = [];
+			for (const [agentId, accounts] of Object.entries(config)) {
+				const tokens = auth.get(agentId);
+				for (const accountId of Object.keys(accounts)) {
+					if (tokens && Object.hasOwn(tokens, accountId))
+						continue;
+					delete accounts[accountId];
+					removed.push(`${agentId}:${accountId}`);
+				}
+				if (Object.keys(accounts).length === 0)
+					delete config[agentId];
+			}
+			if (removed.length === 0) {
+				console.log("No orphaned schedules found.");
+				return;
+			}
+			await saveScheduleConfig(config);
+			for (const ref of removed)
+				console.log(`[${ref}] removed orphaned schedule.`);
 		}
 	)
 	.command("status", "Show stored token status across all agents and accounts", () => { }, showStatus)
