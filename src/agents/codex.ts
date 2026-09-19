@@ -36,7 +36,7 @@ interface JwtClaims {
 class CodexAgent extends CodeAgent {
 	readonly id = "codex";
 	readonly displayName = "Codex (OpenAI)";
-	readonly defaultModel = "gpt-5.4-mini";
+	readonly defaultModel = "gpt-5.5";
 	readonly defaultPrimer = "ping";
 	override readonly followUpWindowId = "primary";
 
