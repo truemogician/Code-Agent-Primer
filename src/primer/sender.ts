@@ -1,7 +1,7 @@
 import { AgentRegistry } from "../agents/registry.js";
 import type { CodeAgent, QuotaSnapshot, SendRequestOptions } from "../agents/agent.js";
 import { readSnapshot, writeSnapshot } from "../storage/snapshot.js";
-import { loadScheduleConfig } from "../storage/scheduleConfig.js";
+import { loadConfig } from "../storage/config.js";
 import { log } from "../utils.js";
 
 export interface PrimerResult {
@@ -28,8 +28,8 @@ function logFirstRunHeaders(agent: CodeAgent, accountId: string, headers: Record
 /** Resolve user-configured model/primer overrides for an agent+account, falling
  *  back to the agent's defaults. */
 async function resolveOverrides(agentId: string, accountId: string, explicit?: SendRequestOptions): Promise<SendRequestOptions> {
-	const config = await loadScheduleConfig();
-	const stored = config[agentId]?.[accountId];
+	const config = await loadConfig();
+	const stored = config.schedules[agentId]?.[accountId];
 	return {
 		model: explicit?.model ?? stored?.model,
 		primer: explicit?.primer ?? stored?.primer,

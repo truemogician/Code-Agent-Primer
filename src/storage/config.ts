@@ -27,6 +27,30 @@ export type AgentSchedule = z.infer<typeof AgentScheduleSchema>;
 /** Map from agent id → (account id → schedule). */
 export type ScheduleConfig = z.infer<typeof ScheduleConfigSchema>;
 
+const ProxyConfigSchema = z.discriminatedUnion("mode", [
+	z.object({ mode: z.literal("system") }),
+	z.object({ mode: z.literal("direct") }),
+	z.object({ mode: z.literal("custom"), url: z.string().refine(value => {
+		try {
+			const url = new URL(value);
+			return ["http:", "https:"].includes(url.protocol) && !!url.hostname
+				&& url.pathname === "/" && !url.search && !url.hash;
+		}
+		catch {
+			return false;
+		}
+	}, "Proxy must be an HTTP(S) URL with no path, query, or fragment") }),
+]);
+
+export type ProxyConfig = z.infer<typeof ProxyConfigSchema>;
+
+const ConfigSchema = z.object({
+	schedules: ScheduleConfigSchema.default({}),
+	proxy: ProxyConfigSchema.default({ mode: "system" }),
+}).strict();
+
+export type Config = z.infer<typeof ConfigSchema>;
+
 /** Iterate over every (agentId, accountId, schedule) triple in `config`. */
 export function* iterSchedules(config: ScheduleConfig): Iterable<{ agentId: string; accountId: string; schedule: AgentSchedule; }> {
 	for (const [agentId, accounts] of Object.entries(config)) {
@@ -52,12 +76,12 @@ export function withDefaults(
 	return out;
 }
 
-export async function loadScheduleConfig(): Promise<ScheduleConfig> {
-	return readJsonFile(CONFIG_PATH, ScheduleConfigSchema, { missing: {} });
+export async function loadConfig(): Promise<Config> {
+	return readJsonFile(CONFIG_PATH, ConfigSchema, { missing: ConfigSchema.parse({}) });
 }
 
-export async function saveScheduleConfig(config: ScheduleConfig): Promise<void> {
-	await writeJsonFileAtomic(CONFIG_PATH, config);
+export async function saveConfig(config: Config): Promise<void> {
+	await writeJsonFileAtomic(CONFIG_PATH, ConfigSchema.parse(config), { mode: 0o600, chmod: 0o600 });
 }
 
 /** Merge a partial update into the on-disk schedule for one agent+account. */
@@ -66,11 +90,11 @@ export async function updateAgentConfig(
 	accountId: string,
 	patch: Partial<AgentSchedule>,
 ): Promise<AgentSchedule> {
-	const config = await loadScheduleConfig();
-	const accounts = config[agentId] ?? (config[agentId] = {});
+	const config = await loadConfig();
+	const accounts = config.schedules[agentId] ?? (config.schedules[agentId] = {});
 	const current = accounts[accountId] ?? { ...DEFAULT_SCHEDULE };
 	const merged: AgentSchedule = { ...current, ...patch };
 	accounts[accountId] = merged;
-	await saveScheduleConfig(config);
+	await saveConfig(config);
 	return merged;
 }

@@ -1,9 +1,11 @@
+import type { Response } from "undici";
 import { randomUUID } from "node:crypto";
-import { CODEX } from "../config.js";
 import { saveTokens, getTokens, type CodexTokens } from "../storage/tokens.js";
 import { CodeAgent } from "./agent.js";
-import { flattenHeaders, num, log } from "../utils.js";
 import type { ExchangeArgs, OAuthConfig, QuotaSnapshot, RawPrimerResponse, SendRequestOptions } from "./agent.js";
+import { CODEX } from "../config.js";
+import { fetch } from "../proxy.js";
+import { flattenHeaders, num, log } from "../utils.js";
 
 const RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 const PREFIXES = ["x-codex-primary-", "x-codex-secondary-"] as const;

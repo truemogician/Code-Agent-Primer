@@ -9,8 +9,8 @@ import { PRIMER_HOME, type ProviderId } from "./config.js";
 import { sendPrimer } from "./primer/sender.js";
 import { startSchedulerFromConfig } from "./scheduler.js";
 import { parseAgentRef } from "./storage/account.js";
-import type { AgentSchedule } from "./storage/scheduleConfig.js";
-import { iterSchedules, loadScheduleConfig, saveScheduleConfig, updateAgentConfig, withDefaults } from "./storage/scheduleConfig.js";
+import type { AgentSchedule } from "./storage/config.js";
+import { iterSchedules, loadConfig, saveConfig, updateAgentConfig, withDefaults } from "./storage/config.js";
 import { deleteAccount, ensureHomeDir, listAccounts, loadTokens, nextAutoAccountId } from "./storage/tokens.js";
 import { formatLocalTime, formatQuotaSnapshot, log } from "./utils.js";
 
@@ -126,8 +126,8 @@ await yargs(hideBin(process.argv))
 		async argv => {
 			await ensureHomeDir();
 			const { agent, accountId } = resolveAgentRef(argv.agent as string);
-			const config = await loadScheduleConfig();
-			const accounts = config[agent.id];
+			const config = await loadConfig();
+			const accounts = config.schedules[agent.id];
 			const targets = accountId ? [accountId] : await listAccounts(agent.id as ProviderId);
 			if (targets.length === 0)
 				throw new Error(`No accounts logged in for ${agent.id}.`);
@@ -138,8 +138,8 @@ await yargs(hideBin(process.argv))
 				if (accounts !== undefined && Object.hasOwn(accounts, id)) {
 					delete accounts[id];
 					if (Object.keys(accounts).length === 0)
-						delete config[agent.id];
-					await saveScheduleConfig(config);
+						delete config.schedules[agent.id];
+					await saveConfig(config);
 				}
 				console.log(`[${agent.id}:${id}] removed account.`);
 			}
@@ -150,10 +150,10 @@ await yargs(hideBin(process.argv))
 		"Remove orphaned schedule entries that have no stored auth tokens across all agents.",
 		() => { },
 		async () => {
-			const config = await loadScheduleConfig();
+			const config = await loadConfig();
 			const auth = new Map(Object.entries(await loadTokens()));
 			const removed: string[] = [];
-			for (const [agentId, accounts] of Object.entries(config)) {
+			for (const [agentId, accounts] of Object.entries(config.schedules)) {
 				const tokens = auth.get(agentId);
 				for (const accountId of Object.keys(accounts)) {
 					if (tokens && Object.hasOwn(tokens, accountId))
@@ -162,13 +162,13 @@ await yargs(hideBin(process.argv))
 					removed.push(`${agentId}:${accountId}`);
 				}
 				if (Object.keys(accounts).length === 0)
-					delete config[agentId];
+					delete config.schedules[agentId];
 			}
 			if (removed.length === 0) {
 				console.log("No orphaned schedules found.");
 				return;
 			}
-			await saveScheduleConfig(config);
+			await saveConfig(config);
 			for (const ref of removed)
 				console.log(`[${ref}] removed orphaned schedule.`);
 		}
@@ -228,83 +228,116 @@ await yargs(hideBin(process.argv))
 		}
 	)
 	.command(
-		"config [agent]",
-		"Show or update the primer schedule. With no agent: print every (agent, account). With `<id>`: every account under that agent. With `<id>:<accountId>`: that single one. Flags update the matching scope.",
+		"config",
+		"Show or update settings.",
 		y => y
-			.positional("agent", {
-				describe: "Agent ref `<id>[:<accountId>]` to inspect or update",
-				type: "string",
-			})
-			.option("cron", { type: "string", describe: "Cron expression" })
-			.option("model", { type: "string", describe: "Override model name (use \"\" to clear)" })
-			.option("primer", { type: "string", describe: "Override primer message (use \"\" to clear)" })
-			.option("enable", { type: "boolean", describe: "Enable scheduled primers" })
-			.option("disable", { type: "boolean", describe: "Disable scheduled primers" })
-			.option("follow-up", { type: "boolean", describe: "Chain extra primers across window boundaries" })
-			.option("follow-up-probe-lead", { type: "number", describe: "Minutes before window reset to probe for usage (default 5)" })
-			.conflicts("enable", "disable"),
-		async argv => {
-			const config = await loadScheduleConfig();
-			const patch: Record<string, unknown> = {};
-			if (argv.cron !== undefined)
-				patch.cron = argv.cron;
-			if (argv.model !== undefined)
-				patch.model = argv.model === "" ? undefined : argv.model;
-			if (argv.primer !== undefined)
-				patch.primer = argv.primer === "" ? undefined : argv.primer;
-			if (argv.enable)
-				patch.enabled = true;
-			if (argv.disable)
-				patch.enabled = false;
-			if (argv["follow-up"] !== undefined)
-				patch.followUp = argv["follow-up"];
-			if (argv["follow-up-probe-lead"] !== undefined)
-				patch.followUpProbeLeadMinutes = argv["follow-up-probe-lead"];
+			.command(
+				"proxy [value]",
+				"Show or configure the proxy for all provider requests. Defaults to system settings.",
+				y => y
+					.positional("value", { type: "string", describe: "false for direct connections, system for OS/environment settings, or an HTTP(S) proxy URL" }),
+				async argv => {
+					const config = await loadConfig();
+					if (argv.value !== undefined) {
+						config.proxy = argv.value === "false"
+							? { mode: "direct" }
+							: argv.value === "system"
+								? { mode: "system" }
+								: { mode: "custom", url: argv.value };
+						await saveConfig(config);
+					}
+					if (config.proxy.mode === "custom") {
+						const url = new URL(config.proxy.url);
+						if (url.username)
+							url.username = "***";
+						if (url.password)
+							url.password = "***";
+						console.log(`Proxy: ${url.href}`);
+					}
+					else
+						console.log(config.proxy.mode === "direct" ? "Proxy: disabled (direct connections)." : "Proxy: system settings.");
+				}
+			)
+			.command(
+				"schedule [agent]",
+				"Show or update the primer schedule. With no agent: print every (agent, account). With `<id>`: every account under that agent. With `<id>:<accountId>`: that single one. Flags update the matching scope.",
+				y => y
+					.positional("agent", {
+						describe: "Agent ref `<id>[:<accountId>]` to inspect or update",
+						type: "string",
+					})
+					.option("cron", { type: "string", describe: "Cron expression" })
+					.option("model", { type: "string", describe: "Override model name (use \"\" to clear)" })
+					.option("primer", { type: "string", describe: "Override primer message (use \"\" to clear)" })
+					.option("enable", { type: "boolean", describe: "Enable scheduled primers" })
+					.option("disable", { type: "boolean", describe: "Disable scheduled primers" })
+					.option("follow-up", { type: "boolean", describe: "Chain extra primers across window boundaries" })
+					.option("follow-up-probe-lead", { type: "number", describe: "Minutes before window reset to probe for usage (default 5)" })
+					.conflicts("enable", "disable"),
+				async argv => {
+					const config = await loadConfig();
+					const patch: Record<string, unknown> = {};
+					if (argv.cron !== undefined)
+						patch.cron = argv.cron;
+					if (argv.model !== undefined)
+						patch.model = argv.model === "" ? undefined : argv.model;
+					if (argv.primer !== undefined)
+						patch.primer = argv.primer === "" ? undefined : argv.primer;
+					if (argv.enable)
+						patch.enabled = true;
+					if (argv.disable)
+						patch.enabled = false;
+					if (argv["follow-up"] !== undefined)
+						patch.followUp = argv["follow-up"];
+					if (argv["follow-up-probe-lead"] !== undefined)
+						patch.followUpProbeLeadMinutes = argv["follow-up-probe-lead"];
 
-			// Resolve the (agent, account) target list
-			let targets: Array<{ agentId: string; accountId: string; }>;
-			if (!argv.agent) {
-				targets = [];
-				for (const agent of AgentRegistry.list()) {
-					for (const accountId of await listAccounts(agent.id as ProviderId))
-						targets.push({ agentId: agent.id, accountId });
-				}
-			}
-			else {
-				const { agent, accountId } = resolveAgentRef(argv.agent);
-				if (accountId)
-					targets = [{ agentId: agent.id, accountId }];
-				else {
-					const accounts = await listAccounts(agent.id as ProviderId);
-					if (accounts.length === 0)
-						throw new Error(`No accounts logged in for ${agent.id}.`);
-					targets = accounts.map(a => ({ agentId: agent.id, accountId: a }));
-				}
-			}
+					// Resolve the (agent, account) target list
+					let targets: Array<{ agentId: string; accountId: string; }>;
+					if (!argv.agent) {
+						targets = [];
+						for (const agent of AgentRegistry.list()) {
+							for (const accountId of await listAccounts(agent.id as ProviderId))
+								targets.push({ agentId: agent.id, accountId });
+						}
+					}
+					else {
+						const { agent, accountId } = resolveAgentRef(argv.agent);
+						if (accountId)
+							targets = [{ agentId: agent.id, accountId }];
+						else {
+							const accounts = await listAccounts(agent.id as ProviderId);
+							if (accounts.length === 0)
+								throw new Error(`No accounts logged in for ${agent.id}.`);
+							targets = accounts.map(a => ({ agentId: agent.id, accountId: a }));
+						}
+					}
 
-			if (Object.keys(patch).length === 0) {
-				const effective = withDefaults(config, targets);
-				console.log(`Primer home: ${PRIMER_HOME}`);
-				if (targets.length === 0) {
-					console.log(chalk.gray("(no accounts logged in)"));
-					return;
-				}
-				const seen = new Set(targets.map(t => `${t.agentId}:${t.accountId}`));
-				for (const { agentId, accountId, schedule } of iterSchedules(effective)) {
-					if (!seen.has(`${agentId}:${accountId}`))
-						continue;
-					const agent = AgentRegistry.get(agentId);
-					console.log(`\n${formatAgentConfig(agent, accountId, schedule)}`);
-				}
-				return;
-			}
+					if (Object.keys(patch).length === 0) {
+						const effective = withDefaults(config.schedules, targets);
+						console.log(`Primer home: ${PRIMER_HOME}`);
+						if (targets.length === 0) {
+							console.log(chalk.gray("(no accounts logged in)"));
+							return;
+						}
+						const seen = new Set(targets.map(t => `${t.agentId}:${t.accountId}`));
+						for (const { agentId, accountId, schedule } of iterSchedules(effective)) {
+							if (!seen.has(`${agentId}:${accountId}`))
+								continue;
+							const agent = AgentRegistry.get(agentId);
+							console.log(`\n${formatAgentConfig(agent, accountId, schedule)}`);
+						}
+						return;
+					}
 
-			for (const { agentId, accountId } of targets) {
-				const updated = await updateAgentConfig(agentId, accountId, patch);
-				console.log(`[${agentId}:${accountId}] updated:`);
-				console.log(JSON.stringify(updated, null, 2));
-			}
-		}
+					for (const { agentId, accountId } of targets) {
+						const updated = await updateAgentConfig(agentId, accountId, patch);
+						console.log(`[${agentId}:${accountId}] updated:`);
+						console.log(JSON.stringify(updated, null, 2));
+					}
+				}
+			)
+			.demandCommand(1, "Choose config proxy or config schedule.")
 	)
 	.command(
 		"agents",

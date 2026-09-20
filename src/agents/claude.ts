@@ -1,8 +1,10 @@
-import { CLAUDE } from "../config.js";
+import type { Response } from "undici";
 import { saveTokens, getTokens, type ClaudeTokens } from "../storage/tokens.js";
 import { CodeAgent } from "./agent.js";
-import { flattenHeaders, num } from "../utils.js";
 import type { ExchangeArgs, OAuthConfig, QuotaSnapshot, RawPrimerResponse, SendRequestOptions } from "./agent.js";
+import { CLAUDE } from "../config.js";
+import { fetch } from "../proxy.js";
+import { flattenHeaders, num } from "../utils.js";
 
 const MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const VERSION = "2023-06-01";

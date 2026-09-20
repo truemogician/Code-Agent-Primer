@@ -3,8 +3,8 @@ import { Cron } from "croner";
 import { AgentRegistry } from "./agents/registry.js";
 import type { CodeAgent, QuotaSnapshot, QuotaWindow } from "./agents/agent.js";
 import { sendPrimer } from "./primer/sender.js";
-import { loadScheduleConfig, withDefaults, iterSchedules } from "./storage/scheduleConfig.js";
-import type { ScheduleConfig } from "./storage/scheduleConfig.js";
+import { loadConfig, withDefaults, iterSchedules } from "./storage/config.js";
+import type { ScheduleConfig } from "./storage/config.js";
 import { listAccounts } from "./storage/tokens.js";
 import type { ProviderId } from "./config.js";
 import { log, formatLocalTime } from "./utils.js";
@@ -204,6 +204,6 @@ export async function startScheduler(config: ScheduleConfig, opts: { fireOnStart
 }
 
 export async function startSchedulerFromConfig(opts: { fireOnStart?: boolean; } = {}): Promise<SchedulerHandle> {
-	const config = await loadScheduleConfig();
-	return startScheduler(config, opts);
+	const config = await loadConfig();
+	return startScheduler(config.schedules, opts);
 }

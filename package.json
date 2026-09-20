@@ -1,6 +1,6 @@
 {
 	"name": "code-agent-primer",
-	"version": "1.1.1",
+	"version": "1.2.0",
 	"type": "module",
 	"private": true,
 	"bin": {
@@ -8,7 +8,7 @@
 	},
 	"scripts": {
 		"build": "tsc",
-		"test": "bun test tests",
+		"test": "bun test ./tests",
 		"start": "bun src/cli.ts"
 	},
 	"author": "true_mogician",
@@ -22,6 +22,7 @@
 		"chalk": "^5.6.2",
 		"croner": "^10.0.1",
 		"date-fns": "^4.1.0",
+		"undici": "^6.28.1",
 		"yargs": "^18.0.0",
 		"zod": "^4.3.6"
 	},

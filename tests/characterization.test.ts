@@ -6,7 +6,7 @@ import { codexAgent } from "../src/agents/codex.js";
 import { claudeAgent } from "../src/agents/claude.js";
 import { AgentRegistry } from "../src/agents/registry.js";
 import { formatQuotaSnapshot } from "../src/utils.js";
-import * as schedule from "../src/storage/scheduleConfig.js";
+import * as schedule from "../src/storage/config.js";
 import * as snapshot from "../src/storage/snapshot.js";
 import * as tokens from "../src/storage/tokens.js";
 

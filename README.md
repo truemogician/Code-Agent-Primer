@@ -48,20 +48,51 @@ Account ids may be any string without `:`, whitespace, or path separators. Login
 
 ## Commands
 
-| Command                               | Description                                                                             |
-| ------------------------------------- | --------------------------------------------------------------------------------------- |
-| `login <agent>`                       | OAuth login. Auto-assigns an account id if not provided.                                |
-| `remove <agent>`                      | Remove stored auth tokens and schedules; omit the account to remove all for the agent. |
-| `clean`                               | Remove schedules with no stored auth tokens across all agents.                         |
-| `status`                              | Show every stored token across all agents and accounts.                                 |
-| `send <agent> [--no-consume] [--raw]` | Send a primer; fan-out across all accounts under the agent if account is omitted.       |
-| `run [--now]`                         | Start the scheduler (long-running). `--now` fires once per (agent, account) at startup. |
-| `config [agent] [flags]`              | Show or update schedules. See below.                                                    |
-| `agents`                              | List registered agents and their connected accounts.                                    |
+| Command                                                  | Description                                                                             |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `login <agent>`                                          | OAuth login. Auto-assigns an account id if not provided.                                |
+| `remove <agent>`                                         | Remove stored auth tokens and schedules; omit the account to remove all for the agent.  |
+| `agents`                                                 | List registered agents and their connected accounts.                                    |
+| `status`                                                 | Show every stored token across all agents and accounts.                                 |
+| `send <agent> [--no-consume] [--raw]`                    | Send a primer; fan-out across all accounts under the agent if account is omitted.       |
+| `run [--now]`                                            | Start the scheduler (long-running). `--now` fires once per (agent, account) at startup. |
+| `config proxy [false \| system \| <url>]` | Show or configure the proxy used for all provider requests.                             |
+| `config schedule [agent] [flags]`                        | Show or update schedules. See below.                                                    |
+| `clean`                                                  | Remove schedules with no stored auth tokens across all agents.                          |
 
-### `config` flags
+### Proxy settings
 
-`config` operates on the scope implied by `[agent]`:
+```bash
+pnpm start config proxy                          # Show the saved mode (default: system)
+pnpm start config proxy http://127.0.0.1:7890    # Use an explicit HTTP(S) proxy
+pnpm start config proxy false                    # Connect directly, ignoring system settings
+pnpm start config proxy system                   # Restore system settings
+```
+
+Settings are saved in the `proxy` section of `~/.code-agent-primer/config.json` (or under `CODE_AGENT_PRIMER_HOME`) and apply to OAuth token exchanges, token refreshes, and all primer requests. Restart a running scheduler after changing proxy settings. Browser login pages use the browser's own proxy settings.
+
+System mode honors `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, and `NO_PROXY`, with lowercase variants taking precedence. HTTPS requests prefer `HTTPS_PROXY`, then `HTTP_PROXY`, then `ALL_PROXY`. `NO_PROXY` supports comma-separated hostnames, wildcard/domain suffixes, optional ports, and `*` for direct connections. An explicit proxy URL overrides these variables, including `NO_PROXY`.
+
+When no environment proxy applies, Windows uses the current user's Internet Options (including bypass rules and automatic proxy configuration). macOS uses manual HTTP/HTTPS proxy settings and bypass rules; automatic PAC/WPAD configuration requires an explicit proxy URL. Other platforms use environment variables. HTTP and HTTPS proxy URLs are supported, including URL-encoded credentials; credentials are hidden in command output.
+
+The config format is now:
+
+```json
+{
+  "schedules": {
+    "codex": {
+      "work": { "enabled": true, "cron": "0 */1 * * *" }
+    }
+  },
+  "proxy": { "mode": "system" }
+}
+```
+
+Missing sections default to empty schedules and system proxy settings. This is a breaking change: old flat schedule files are rejected, the separate `proxy.json` is no longer read, and the old `proxy` and `config [agent]` commands are removed. Recreate your settings with the new commands or manually place them under `schedules` and `proxy`.
+
+### `config schedule` flags
+
+`config schedule` operates on the scope implied by `[agent]`:
 
 - omitted → every (agent, account) pair
 - `<id>` → every account under that agent
@@ -92,7 +123,7 @@ Everything lives under `~/.code-agent-primer/` (override with `CODE_AGENT_PRIMER
 ```
 ~/.code-agent-primer/
 ├── tokens.json              # { codex: { "<accountId>": {...} }, claude: { ... } }
-├── config.json              # { codex: { "<accountId>": <schedule> }, ... }
+├── config.json              # { schedules: { <agent>: { <accountId>: <schedule> } }, proxy: { ... } }
 └── snapshots/
     ├── codex/<accountId>.json
     └── claude/<accountId>.json
@@ -138,7 +169,7 @@ src/
 ├── storage/
 │   ├── tokens.ts             # provider → account → tokens
 │   ├── snapshot.ts           # snapshots/<agentId>/<accountId>.json
-│   ├── scheduleConfig.ts     # nested schedule config
+│   ├── config.ts             # shared schedule and proxy configuration
 │   └── account.ts            # parseAgentRef / assertValidAccountId
 └── utils.ts                  # JSON I/O, headers, formatting
 ```
